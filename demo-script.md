@@ -55,13 +55,7 @@ Click the **Retinol** chip. The right panel shows:
 
 **Talking point:** *"Retinol doesn't have a 'PhotosensitiveAgent' label in the LPG. That's an inferred class — RDFS walks the ontology's subClassOf hierarchy. This matters when we need to find ALL photosensitive ingredients, not just the ones someone remembered to tag."*
 
-### 1.3 — GDS Community Detection
-
-Click **Run GDS Community Detection**. Ingredient chips get colored borders showing Louvain clusters.
-
-**Talking point:** *"GDS projects the ingredient co-occurrence graph (two ingredients appear in the same product) and runs Louvain. The clusters show which ingredients tend to be used together — useful for finding complementary ingredients when designing new formulations."*
-
-### 1.4 — Product BOM
+### 1.3 — Product BOM
 
 Click **Anti-Aging Serum V1** in the product list. The bar chart shows concentrations computed by Cypher's `reduce` over the multi-level BOM path (Product → Phase → PreMix → Ingredient), multiplying ratios at each level.
 
@@ -228,12 +222,11 @@ Validate a serum with Avobenzone at 0.04, Squalane at 0.15, and Glycerin at 0.05
 
 ## Wrap-Up — Why This Matters
 
-Three capabilities working together:
+Two capabilities working together:
 
 | Layer | What it does | Can't do alone |
 |-------|-------------|---------------|
 | **Cypher** | BOM traversal, ratio multiplication, incompatibility checks, supplier blast radius | Can't do RDFS class inference or SHACL validation |
-| **GDS** | Community detection, node similarity, PageRank | No RDF reasoning |
 | **n20s** | RDFS backward/forward chaining, Jena rules with builtins, SHACL validation, Turtle export | Can't traverse LPG paths or compute BOM concentrations |
 
 The demo shows: **the graph structure (LPG) determines the SCOPE of reasoning, and the RDF layer (n20s) determines the LOGIC of reasoning.** Neither is complete without the other.

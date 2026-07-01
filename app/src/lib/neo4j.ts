@@ -24,6 +24,7 @@ export interface QueryLogEntry {
   params: Record<string, unknown>;
   durationMs: number;
   rowCount: number;
+  results?: unknown[];
   error?: string;
 }
 
@@ -79,6 +80,7 @@ export async function runQuery<T = Record<string, unknown>>(
         params,
         durationMs: Math.round(performance.now() - start),
         rowCount: rows.length,
+        results: rows.slice(0, 20) as unknown[],
       },
     ];
     _notifyListeners();

@@ -6,6 +6,17 @@ import {
   type QueryLogEntry,
 } from "../lib/neo4j";
 
+function truncateValue(v: unknown): unknown {
+  if (typeof v === "string" && v.length > 100) return v.substring(0, 100) + "...";
+  if (Array.isArray(v)) return v.slice(0, 5).map(truncateValue);
+  if (v && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v)) out[k] = truncateValue(val);
+    return out;
+  }
+  return v;
+}
+
 export default function QueryAuditDrawer() {
   const [open, setOpen] = useState(false);
   const [log, setLog] = useState<QueryLogEntry[]>([]);
@@ -114,6 +125,9 @@ export default function QueryAuditDrawer() {
                   {entry.error && (
                     <div className="audit-error-detail">{entry.error}</div>
                   )}
+                  {entry.results && entry.results.length > 0 && (
+                    <ResultsSection results={entry.results} total={entry.rowCount} />
+                  )}
                   <button
                     className="audit-btn"
                     onClick={(e) => {
@@ -131,4 +145,62 @@ export default function QueryAuditDrawer() {
       </div>
     </>
   );
+}
+
+function ResultsSection({ results, total }: { results: unknown[]; total: number }) {
+  const [open, setOpen] = useState(false);
+
+  const rows = results as Record<string, unknown>[];
+  if (rows.length === 0) return null;
+
+  const keys = Object.keys(rows[0]);
+
+  return (
+    <div className="audit-results" onClick={(e) => e.stopPropagation()}>
+      <button
+        className="audit-btn"
+        onClick={() => setOpen(!open)}
+        style={{ marginBottom: open ? 6 : 0 }}
+      >
+        {open ? "Hide" : "Show"} Results ({total} row{total !== 1 ? "s" : ""})
+      </button>
+      {open && (
+        <div className="audit-results-table-wrap">
+          <table className="audit-results-table">
+            <thead>
+              <tr>
+                {keys.map((k) => (
+                  <th key={k}>{k}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => (
+                <tr key={i}>
+                  {keys.map((k) => (
+                    <td key={k}>{formatCell(row[k])}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {total > rows.length && (
+            <div style={{ color: "#888", fontSize: 11, marginTop: 4 }}>
+              Showing {rows.length} of {total} rows
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatCell(val: unknown): string {
+  if (val === null || val === undefined) return "null";
+  if (typeof val === "object") {
+    const s = JSON.stringify(truncateValue(val));
+    return s.length > 80 ? s.substring(0, 80) + "..." : s;
+  }
+  const s = String(val);
+  return s.length > 80 ? s.substring(0, 80) + "..." : s;
 }

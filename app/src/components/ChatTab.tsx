@@ -20,8 +20,9 @@ import {
 import { runQuery, getQueryLog } from "../lib/neo4j";
 
 interface ChatMessage {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool";
   content: string;
+  toolName?: string;
 }
 
 const SYSTEM_PROMPT = `You are a cosmetics R&D assistant connected to a Neo4j graph database.
@@ -31,16 +32,14 @@ The graph contains 153 real cosmetic ingredients (with INCI names, CAS numbers, 
 You can use the available tools to explore ingredients, analyze products, check compatibilities,
 validate formulations against regulatory limits, and export RDF data.
 
-When presenting results that involved database queries, show the key findings clearly.
+When presenting results, show the key findings clearly.
 Be concise but informative. Use tables or bullet points for structured data.
 When a validation finds violations, highlight them prominently.
 When asked "can I combine X with Y", check for INCOMPATIBLE_WITH relationships.
 If incompatibilities are found, clearly say NO and explain why they should not be combined.
 
-IMPORTANT: Every tool response includes a \`cypher_audit_trail\` section with the exact
-Cypher/SPARQL/Jena-rules that were executed. ALWAYS show this audit trail in a fenced
-\`\`\`cypher code block at the end of your response so the audience can reproduce the
-computation in Neo4j Browser or cypher-shell. Use the trail verbatim — do not paraphrase.`;
+Do NOT include the cypher_audit_trail in your response — the UI shows it separately in
+a dedicated audit panel. Focus on interpreting the results for the user.`;
 
 const TOOLS = [
   {
@@ -375,10 +374,12 @@ export default function ChatTab() {
     try {
       const ai = new GoogleGenAI({ apiKey });
 
-      const chatHistory = messages.map((m) => ({
-        role: m.role === "user" ? ("user" as const) : ("model" as const),
-        parts: [{ text: m.content }],
-      }));
+      const chatHistory = messages
+        .filter((m) => m.role !== "tool")
+        .map((m) => ({
+          role: m.role === "user" ? ("user" as const) : ("model" as const),
+          parts: [{ text: m.content }],
+        }));
 
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
@@ -415,10 +416,20 @@ export default function ChatTab() {
           break;
         }
 
-        // Execute tool calls
+        // Execute tool calls and show them in the chat
         const toolResults = [];
         for (const part of functionCalls) {
           const fc = part.functionCall!;
+          const argsPreview = Object.entries(fc.args as Record<string, unknown>)
+            .map(([k, v]) => {
+              const s = JSON.stringify(v);
+              return `${k}: ${s.length > 60 ? s.substring(0, 60) + "..." : s}`;
+            })
+            .join(", ");
+          setMessages((prev) => [
+            ...prev,
+            { role: "tool", content: argsPreview, toolName: fc.name! },
+          ]);
           const result = await executeTool(fc.name!, fc.args as Record<string, unknown>);
           toolResults.push({
             functionResponse: {
@@ -497,17 +508,25 @@ export default function ChatTab() {
 
         {messages.map((msg, i) => (
           <div key={i} className={`chat-message ${msg.role}`}>
-            <div className="chat-message-content">
-              {msg.role === "assistant" ? (
-                <div
-                  dangerouslySetInnerHTML={{
-                    __html: formatMarkdown(msg.content),
-                  }}
-                />
-              ) : (
-                msg.content
-              )}
-            </div>
+            {msg.role === "tool" ? (
+              <div className="chat-tool-call">
+                <span className="chat-tool-icon">&#9881;</span>
+                <span className="chat-tool-name">{msg.toolName}</span>
+                <span className="chat-tool-args">{msg.content}</span>
+              </div>
+            ) : (
+              <div className="chat-message-content">
+                {msg.role === "assistant" ? (
+                  <div
+                    dangerouslySetInnerHTML={{
+                      __html: formatMarkdown(msg.content),
+                    }}
+                  />
+                ) : (
+                  msg.content
+                )}
+              </div>
+            )}
           </div>
         ))}
 

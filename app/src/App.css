@@ -639,6 +639,41 @@
   justify-content: flex-end;
 }
 
+.chat-message.tool {
+  justify-content: center;
+}
+
+.chat-tool-call {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 12px;
+  background: #f0f4ff;
+  border: 1px dashed #b0c4de;
+  font-size: 12px;
+  color: #555;
+  font-family: monospace;
+}
+
+.chat-tool-icon {
+  font-size: 14px;
+  color: #006fd6;
+}
+
+.chat-tool-name {
+  font-weight: 600;
+  color: #0b297d;
+}
+
+.chat-tool-args {
+  color: #888;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 400px;
+}
+
 .chat-message.user .chat-message-content {
   background: #0b297d;
   color: white;

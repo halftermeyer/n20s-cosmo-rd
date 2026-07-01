@@ -373,30 +373,47 @@ function SupplierDisruptionScenario() {
                 <thead>
                   <tr>
                     <th>Substitute</th>
-                    <th>Status</th>
+                    <th>Cost Impact</th>
+                    <th>Compliance</th>
                     <th>Violations</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {subValidations.map((sv) => (
-                    <tr key={sv.substitute}>
-                      <td style={{ fontWeight: 600 }}>{sv.substitute}</td>
-                      <td>
-                        <span className={sv.status === "pass" ? "status-pass" : "status-fail"}>
-                          {sv.status.toUpperCase()}
-                        </span>
-                      </td>
-                      <td>
-                        {sv.violations.length > 0
-                          ? sv.violations.map((v, i) => (
-                              <span key={i} className="status-fail" style={{ marginRight: 6 }}>
-                                {v.market}: {(Number(v.actual) * 100).toFixed(2)}% &gt; {(Number(v.limit) * 100).toFixed(2)}%
-                              </span>
-                            ))
-                          : <span style={{ color: "#2e7d32" }}>All markets clear</span>}
-                      </td>
-                    </tr>
-                  ))}
+                  {subValidations.map((sv) => {
+                    const costDelta = sv.substitutedProductCost - sv.originalProductCost;
+                    const costPct = sv.originalProductCost > 0 ? (costDelta / sv.originalProductCost) * 100 : 0;
+                    return (
+                      <tr key={sv.substitute}>
+                        <td style={{ fontWeight: 600 }}>{sv.substitute}</td>
+                        <td>
+                          <span style={{
+                            color: costDelta > 0 ? "#c62828" : costDelta < 0 ? "#2e7d32" : "#666",
+                            fontFamily: "monospace",
+                            fontWeight: 600,
+                          }}>
+                            {costDelta > 0 ? "+" : ""}{costPct.toFixed(1)}%
+                          </span>
+                          <div style={{ fontSize: 11, color: "#999" }}>
+                            ${sv.originalProductCost.toFixed(2)} &rarr; ${sv.substitutedProductCost.toFixed(2)}/kg
+                          </div>
+                        </td>
+                        <td>
+                          <span className={sv.status === "pass" ? "status-pass" : "status-fail"}>
+                            {sv.status.toUpperCase()}
+                          </span>
+                        </td>
+                        <td>
+                          {sv.violations.length > 0
+                            ? sv.violations.map((v, i) => (
+                                <span key={i} className="status-fail" style={{ marginRight: 6, display: "inline-block", marginBottom: 2 }}>
+                                  {v.ingredient} ({v.market}): {(Number(v.actual) * 100).toFixed(2)}% &gt; {(Number(v.limit) * 100).toFixed(2)}%
+                                </span>
+                              ))
+                            : <span style={{ color: "#2e7d32" }}>All markets clear</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

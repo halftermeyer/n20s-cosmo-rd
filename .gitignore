@@ -6,3 +6,5 @@ app/.env
 .claude/
 .vscode/
 *.pyc
+package.json
+package-lock.json

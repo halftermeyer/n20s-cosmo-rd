@@ -289,7 +289,9 @@ export interface SubstitutionValidation {
   product: string;
   original: string;
   substitute: string;
-  violations: { market: string; actual: number; limit: number }[];
+  originalProductCost: number;
+  substitutedProductCost: number;
+  violations: { ingredient: string; market: string; actual: number; limit: number }[];
   status: "pass" | "fail";
 }
 
@@ -425,15 +427,33 @@ export async function validateSubstitution(
     { g: graphName }
   ).catch(() => {});
 
-  const productName = await runQuery<{ name: string }>(`
-    MATCH (p:Product {sku: $sku}) RETURN p.name AS name
-  `, { sku: productSku });
+  // Compute full product cost: original vs substituted
+  // sum(concentration × cost_per_kg) for all ingredients
+  const costs = await runQuery<{
+    name: string;
+    originalProductCost: number;
+    substitutedProductCost: number;
+  }>(`
+    MATCH (p:Product {sku: $sku})
+    MATCH path = (p)-[:CONTAINS*]->(i:Ingredient)
+    WITH p,
+         i.name AS ingName,
+         i.cost AS ingCost,
+         reduce(conc = 1.0, r IN relationships(path) | conc * r.ratio) AS conc
+    OPTIONAL MATCH (sub:Ingredient {name: $substitute})
+    WITH p.name AS name,
+         sum(conc * ingCost) AS originalProductCost,
+         sum(conc * CASE WHEN ingName = $original THEN sub.cost ELSE ingCost END) AS substitutedProductCost
+    RETURN name, originalProductCost, substitutedProductCost
+  `, { sku: productSku, original: originalIngredient, substitute: substituteIngredient });
 
   return {
-    product: productName[0]?.name || productSku,
+    product: costs[0]?.name || productSku,
     original: originalIngredient,
     substitute: substituteIngredient,
-    violations: violations.map((v) => ({ market: v.market, actual: Number(v.actual), limit: Number(v.limit) })),
+    originalProductCost: costs[0]?.originalProductCost || 0,
+    substitutedProductCost: costs[0]?.substitutedProductCost || 0,
+    violations: violations.map((v) => ({ ingredient: v.label, market: v.market, actual: Number(v.actual), limit: Number(v.limit) })),
     status: violations.length === 0 ? "pass" : "fail",
   };
 }

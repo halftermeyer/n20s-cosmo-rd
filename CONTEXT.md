@@ -1,8 +1,10 @@
 # n20s Cosmetics R&D Demo — Context for LLM Agents
 
+**Repo**: https://github.com/halftermeyer/n20s-cosmo-rd
+
 ## What This Project Is
 
-A demo application built on top of [n20s](https://github.com/halftermeyer/neo4j-n20s) — a Neo4j plugin for in-memory RDF reasoning from Cypher. Read the n20s `CONTEXT.md` for the plugin's philosophy and API.
+A demo application built on top of [n20s](https://github.com/halftermeyer/neo4j-n20s) — a Neo4j plugin for in-memory RDF reasoning from Cypher. Read the n20s [CONTEXT.md](https://github.com/halftermeyer/neo4j-n20s/blob/main/CONTEXT.md) for the plugin's philosophy and API.
 
 This demo shows **graph-native cosmetics R&D**: using Neo4j + GDS + n20s together to screen candidate formulations for a new product.
 

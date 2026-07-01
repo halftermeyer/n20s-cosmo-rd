@@ -529,6 +529,220 @@ def classify_ingredients_rdf(category: str) -> str:
     return _build_response(grouped, "classifications")
 
 
+@mcp.tool()
+def regulatory_change_impact(market: str, ingredient_class: str, new_limit: float) -> str:
+    """Simulate a regulatory change: what if a market lowers the concentration limit
+    for an ingredient class? Traverses Market ← Product → BOM → Ingredient, computes
+    concentrations via BOM ratio multiplication, and flags newly non-compliant products.
+    Example: market='EU', ingredient_class='RetinoidAgent', new_limit=0.001 (= 0.1%)"""
+    _reset_trail()
+
+    results = run_cypher("""
+        MATCH (m:Market {name: $market})<-[:SOLD_IN]-(p:Product)
+        MATCH path = (p)-[:CONTAINS*]->(i:Ingredient)
+        WHERE (i)-[:BELONGS_TO]->(:Category {name: $category})
+        WITH p, i,
+             reduce(conc = 1.0, r IN relationships(path) | conc * r.ratio) AS actualConc
+        WHERE actualConc > $newLimit
+        RETURN p.name AS product, p.sku AS sku, i.name AS ingredient,
+               round(actualConc * 100, 4) AS actualPct,
+               round($newLimit * 100, 1) AS newLimitPct
+        ORDER BY actualConc DESC
+    """, {"market": market, "category": ingredient_class, "newLimit": new_limit})
+
+    return _build_response({
+        "newlyNonCompliant": results,
+        "newLimit": f"{new_limit * 100:.1f}%",
+        "market": market,
+        "ingredientClass": ingredient_class,
+    }, "regulatory_impact")
+
+
+@mcp.tool()
+def photosensitive_scan(threshold: float = 0.001) -> str:
+    """Find photosensitive ingredients in non-sunscreen products above a
+    concentration threshold. Uses RDFS to infer PhotosensitiveAgent class
+    membership (e.g., Retinol is inferred as PhotosensitiveAgent via the
+    ontology, not via an explicit label)."""
+    _reset_trail()
+    graph_name = "photo_scan"
+
+    try:
+        run_cypher("CALL n20s.graph.drop($g) YIELD graphName RETURN graphName",
+                   {"g": graph_name})
+    except Exception:
+        pass
+
+    # Cypher: non-sunscreen products → BOM → ingredients above threshold
+    bom_data = run_cypher("""
+        MATCH (p:Product)
+        WHERE p.type <> 'Sunscreen'
+        MATCH path = (p)-[:CONTAINS*]->(i:Ingredient)
+        WITH p, i,
+             reduce(conc = 1.0, r IN relationships(path) | conc * r.ratio) AS finalConc
+        WHERE finalConc > $threshold
+        RETURN p.name AS product, p.type AS productType,
+               i.name AS ingredient, round(finalConc * 100, 4) AS pct,
+               i.turtle AS turtle
+        ORDER BY finalConc DESC
+    """, {"threshold": threshold})
+
+    # n20s: RDFS to find PhotosensitiveAgents
+    unique_turtles = list({r["turtle"] for r in bom_data if r["turtle"]})
+    for t in unique_turtles:
+        run_cypher("CALL n20s.graph.addTurtle($g, $turtle) YIELD added RETURN added",
+                   {"g": graph_name, "turtle": t})
+
+    run_cypher("""
+        MATCH (ont:Ontology {name: 'cosmo'})
+        CALL n20s.graph.addTurtle($g, ont.turtle)
+        YIELD graphName, added RETURN added
+    """, {"g": graph_name})
+
+    photo_agents = run_cypher("""
+        CALL n20s.graph.query($g, '
+          PREFIX cosmo: <http://example.org/cosmo#>
+          PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+          PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+          SELECT ?label WHERE {
+            ?ing rdf:type cosmo:PhotosensitiveAgent .
+            ?ing rdfs:label ?label .
+          }
+        ', 'RDFS') YIELD row
+        RETURN row.label AS label
+    """, {"g": graph_name})
+
+    run_cypher("CALL n20s.graph.drop($g) YIELD graphName RETURN graphName",
+               {"g": graph_name})
+
+    photo_names = {r["label"] for r in photo_agents}
+    hits = [
+        {"product": r["product"], "type": r["productType"],
+         "ingredient": r["ingredient"], "concentration": f"{r['pct']}%"}
+        for r in bom_data if r["ingredient"] in photo_names
+    ]
+
+    return _build_response(hits, "photosensitive_hits")
+
+
+@mcp.tool()
+def supplier_disruption(supplier_name: str) -> str:
+    """Simulate a supplier being blocked. Traverses Supplier ← Ingredient → BOM ← Product
+    to find the blast radius, then finds SUBSTITUTE_FOR alternatives."""
+    _reset_trail()
+
+    supplier = run_cypher("""
+        MATCH (s:Supplier {name: $name})
+        RETURN s.name AS name, s.country AS country
+    """, {"name": supplier_name})
+
+    if not supplier:
+        return _build_response(f"Supplier '{supplier_name}' not found.", "error")
+
+    impacts = run_cypher("""
+        MATCH (s:Supplier {name: $name})<-[:SUPPLIED_BY]-(i:Ingredient)
+        MATCH (i)-[:BELONGS_TO]->(c:Category)
+        OPTIONAL MATCH (i)<-[:CONTAINS*]-(p:Product)
+        WITH i.name AS ingredient, c.name AS category,
+             collect(DISTINCT p.name) AS products
+        RETURN ingredient, category, products
+        ORDER BY size(products) DESC
+    """, {"name": supplier_name})
+
+    for imp in impacts:
+        subs = run_cypher("""
+            MATCH (i:Ingredient {name: $name})
+            MATCH (sub:Ingredient)-[:SUBSTITUTE_FOR]->(i)
+            MATCH (sub)-[:BELONGS_TO]->(c:Category)
+            RETURN sub.name AS name, c.name AS category
+        """, {"name": imp["ingredient"]})
+        imp["substitutes"] = [s["name"] for s in subs] if subs else []
+        imp["products"] = [p for p in imp["products"] if p]
+
+    return _build_response({
+        "supplier": supplier[0],
+        "impacts": impacts,
+        "totalProductsAtRisk": len({p for imp in impacts for p in imp["products"]}),
+    }, "supplier_disruption")
+
+
+@mcp.tool()
+def allergen_reclassification(ingredient_name: str) -> str:
+    """Simulate reclassifying an ingredient as an Allergen. Injects the new
+    RDF type via addTurtle, finds all affected products via BOM traversal,
+    and runs SHACL validation (allergens must declare maxConcentrationEU)."""
+    _reset_trail()
+    graph_name = "allergen_sim"
+
+    try:
+        run_cypher("CALL n20s.graph.drop($g) YIELD graphName RETURN graphName",
+                   {"g": graph_name})
+    except Exception:
+        pass
+
+    # Cypher: find all products containing this ingredient
+    products = run_cypher("""
+        MATCH path = (p:Product)-[:CONTAINS*]->(i:Ingredient {name: $name})
+        WITH p, i,
+             reduce(conc = 1.0, r IN relationships(path) | conc * r.ratio) AS finalConc
+        OPTIONAL MATCH (p)-[:SOLD_IN]->(m:Market)
+        WITH p.name AS name, round(finalConc * 100, 4) AS pct,
+             collect(DISTINCT m.name) AS markets
+        RETURN name, pct, markets
+        ORDER BY pct DESC
+    """, {"name": ingredient_name})
+
+    # n20s: load turtle + inject Allergen type + SHACL
+    safe_name = "".join(c for c in ingredient_name if c.isalnum())
+
+    run_cypher("""
+        MATCH (i:Ingredient {name: $name})
+        CALL n20s.graph.addTurtle($g, i.turtle)
+        YIELD added RETURN added
+    """, {"name": ingredient_name, "g": graph_name})
+
+    run_cypher("""
+        CALL n20s.graph.addTurtle($g, $turtle)
+        YIELD added RETURN added
+    """, {"g": graph_name,
+          "turtle": f"@prefix cosmo: <http://example.org/cosmo#> .\ncosmo:{safe_name} a cosmo:Allergen ."})
+
+    allergen_shacl = (
+        "@prefix sh: <http://www.w3.org/ns/shacl#> .\n"
+        "@prefix cosmo: <http://example.org/cosmo#> .\n"
+        "cosmo:AllergenLabelingShape a sh:NodeShape ;\n"
+        "    sh:targetClass cosmo:Allergen ;\n"
+        "    sh:property [\n"
+        "        sh:path cosmo:maxConcentrationEU ;\n"
+        "        sh:minCount 1 ;\n"
+        '        sh:message "EU: Allergens must declare maxConcentrationEU for labeling" ;\n'
+        "    ] ."
+    )
+    run_cypher("CALL n20s.graph.addTurtle($g, $shacl) YIELD added RETURN added",
+               {"g": graph_name, "shacl": allergen_shacl})
+
+    shacl_results = run_cypher("""
+        CALL n20s.graph.validate($g)
+        YIELD focusNode, severity, message
+        RETURN focusNode, message
+    """, {"g": graph_name})
+
+    run_cypher("CALL n20s.graph.drop($g) YIELD graphName RETURN graphName",
+               {"g": graph_name})
+
+    violations = [
+        {"focusNode": r["focusNode"].split("#")[-1] if r["focusNode"] and "#" in str(r["focusNode"]) else str(r["focusNode"]),
+         "message": r["message"]}
+        for r in shacl_results if r["focusNode"] is not None
+    ]
+
+    return _build_response({
+        "ingredient": ingredient_name,
+        "affectedProducts": products,
+        "shaclViolations": violations,
+    }, "allergen_reclassification")
+
+
 if __name__ == "__main__":
     import sys
     if "--sse" in sys.argv:

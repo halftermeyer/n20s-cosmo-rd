@@ -11,6 +11,12 @@ import {
   exportTurtle,
   type Ingredient,
 } from "../lib/queries";
+import {
+  runRegulatoryChangeImpact,
+  runPhotosensitiveCheck,
+  runSupplierDisruption,
+  runAllergenPropagation,
+} from "../lib/scenarioQueries";
 import { runQuery, getQueryLog } from "../lib/neo4j";
 
 interface ChatMessage {
@@ -139,6 +145,55 @@ const TOOLS = [
       required: ["ingredients"],
     },
   },
+  {
+    name: "regulatory_change_impact",
+    description:
+      "Simulate a regulatory change: what happens if a market lowers the concentration limit for an ingredient class? Traverses Market ← Product → BOM → Ingredient to find affected products. Use for questions like 'what if EU lowers the retinoid limit to 0.1%?'",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        market: { type: Type.STRING, description: "Market: EU, US, China, or Japan" },
+        ingredient_class: { type: Type.STRING, description: "Ingredient category: RetinoidAgent, Preservative, UVFilter, AHAExfoliant, BHAExfoliant, FragranceComponent, etc." },
+        new_limit: { type: Type.NUMBER, description: "New concentration limit as a fraction (e.g., 0.001 = 0.1%)" },
+      },
+      required: ["market", "ingredient_class", "new_limit"],
+    },
+  },
+  {
+    name: "photosensitive_scan",
+    description:
+      "Find photosensitive ingredients (like Retinol, Retinal) in non-sunscreen products above a concentration threshold. Uses RDFS inference to determine which ingredients are PhotosensitiveAgents via the class hierarchy.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        threshold: { type: Type.NUMBER, description: "Concentration threshold as fraction (e.g., 0.001 = 0.1%). Default 0.001" },
+      },
+    },
+  },
+  {
+    name: "supplier_disruption",
+    description:
+      "Simulate a supplier being blocked. Finds all affected ingredients, impacted products, and available substitutes by traversing Supplier ← Ingredient → BOM ← Product.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        supplier_name: { type: Type.STRING, description: "Supplier name (e.g., 'BASF Care Chemicals', 'Croda International', 'Seppic')" },
+      },
+      required: ["supplier_name"],
+    },
+  },
+  {
+    name: "allergen_reclassification",
+    description:
+      "Simulate reclassifying an ingredient as an Allergen. Injects the new RDF type, finds all affected products via BOM traversal, and runs SHACL validation to check if the ingredient has the required EU concentration limit declaration.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        ingredient_name: { type: Type.STRING, description: "Ingredient to reclassify as Allergen" },
+      },
+      required: ["ingredient_name"],
+    },
+  },
 ];
 
 async function executeToolInner(
@@ -198,6 +253,62 @@ async function executeToolInner(
         (args.ingredients as string[]).map((name) => ({ name, concentration: 0 }))
       );
       return { turtle: turtle.substring(0, 3000) };
+    }
+    case "regulatory_change_impact": {
+      const impacts = await runRegulatoryChangeImpact(
+        args.market as string,
+        args.ingredient_class as string,
+        args.new_limit as number
+      );
+      const violated = impacts.filter((i) => i.status === "newly_violated");
+      const safe = impacts.filter((i) => i.status === "safe");
+      return {
+        newlyNonCompliant: violated.map((v) => ({
+          product: v.product,
+          ingredient: v.ingredient,
+          actualPct: v.actualPct.toFixed(3) + "%",
+          newLimitPct: v.newLimitPct.toFixed(1) + "%",
+        })),
+        stillCompliant: safe.length,
+        totalChecked: impacts.length,
+      };
+    }
+    case "photosensitive_scan": {
+      const threshold = (args.threshold as number) || 0.001;
+      const hits = await runPhotosensitiveCheck(threshold);
+      return hits.map((h) => ({
+        product: h.product,
+        type: h.productType,
+        ingredient: h.ingredient,
+        concentration: h.concentrationPct.toFixed(3) + "%",
+        inferredClasses: h.inferredClasses,
+      }));
+    }
+    case "supplier_disruption": {
+      const result = await runSupplierDisruption(args.supplier_name as string);
+      return {
+        supplier: result.supplier,
+        affectedIngredients: result.impacts.map((i) => ({
+          ingredient: i.ingredient,
+          category: i.category,
+          productsAtRisk: i.affectedProducts.length,
+          substitutes: i.substitutes.map((s) => s.name),
+        })),
+        totalProductsAtRisk: new Set(result.impacts.flatMap((i) => i.affectedProducts)).size,
+      };
+    }
+    case "allergen_reclassification": {
+      const result = await runAllergenPropagation(args.ingredient_name as string);
+      return {
+        ingredient: result.ingredient,
+        newClasses: result.currentClasses,
+        affectedProducts: result.affectedProducts.map((p) => ({
+          product: p.name,
+          concentration: p.concentrationPct.toFixed(3) + "%",
+          markets: p.markets,
+        })),
+        shaclViolations: result.shaclViolations,
+      };
     }
     default:
       return { error: `Unknown tool: ${name}` };
@@ -364,9 +475,13 @@ export default function ChatTab() {
         <div className="chat-suggestions">
           {[
             "What retinoid ingredients do we have and what are their EU limits?",
-            "Show me the BOM for Anti-Aging Serum V1",
             "Can I combine Retinol with Glycolic Acid?",
-            "Validate a serum with Retinol at 0.06, Phenoxyethanol at 0.015, and Hyaluronic Acid at 0.04",
+            "Validate a serum with Glycolic Acid at 0.08, Hyaluronic Acid at 0.04, and Phenoxyethanol at 0.008",
+            "What if EU lowers the retinoid limit to 0.1%?",
+            "Which non-sunscreen products contain photosensitive ingredients?",
+            "Simulate a disruption of supplier Croda International",
+            "What happens if Niacinamide is reclassified as an allergen?",
+            "Validate a serum with Avobenzone at 0.04, Squalane at 0.15 — does it pass US?",
           ].map((s) => (
             <button
               key={s}

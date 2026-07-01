@@ -26,14 +26,74 @@ export interface QueryLogEntry {
   rowCount: number;
   results?: unknown[];
   error?: string;
+  group?: string;
+}
+
+export interface QueryGroup {
+  label: string;
+  entries: QueryLogEntry[];
+  totalMs: number;
+  totalRows: number;
+  hasError: boolean;
 }
 
 let _logCounter = 0;
 let _queryLog: QueryLogEntry[] = [];
+let _currentGroup: string | null = null;
 const _listeners: Set<() => void> = new Set();
 
 export function getQueryLog(): QueryLogEntry[] {
   return _queryLog;
+}
+
+/** Group subsequent queries under a label until endGroup() is called */
+export function beginGroup(label: string): void {
+  _currentGroup = label;
+}
+
+export function endGroup(): void {
+  _currentGroup = null;
+}
+
+/** Run an async function with all its queries grouped under a label */
+export async function withGroup<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  beginGroup(label);
+  try {
+    return await fn();
+  } finally {
+    endGroup();
+  }
+}
+
+/** Return log entries organized into groups (ungrouped entries get their own group) */
+export function getGroupedLog(): QueryGroup[] {
+  const groups: QueryGroup[] = [];
+  let currentLabel: string | null = null;
+  let currentEntries: QueryLogEntry[] = [];
+
+  const flush = () => {
+    if (currentEntries.length > 0) {
+      groups.push({
+        label: currentLabel || currentEntries[0].cypher.split("\n")[0].trim().substring(0, 60),
+        entries: currentEntries,
+        totalMs: currentEntries.reduce((s, e) => s + e.durationMs, 0),
+        totalRows: currentEntries.reduce((s, e) => s + e.rowCount, 0),
+        hasError: currentEntries.some((e) => e.error),
+      });
+      currentEntries = [];
+    }
+  };
+
+  for (const entry of _queryLog) {
+    if (entry.group !== currentLabel) {
+      flush();
+      currentLabel = entry.group || null;
+    }
+    currentEntries.push(entry);
+  }
+  flush();
+
+  return groups;
 }
 
 export function clearQueryLog(): void {
@@ -81,6 +141,7 @@ export async function runQuery<T = Record<string, unknown>>(
         durationMs: Math.round(performance.now() - start),
         rowCount: rows.length,
         results: rows.slice(0, 20) as unknown[],
+        group: _currentGroup || undefined,
       },
     ];
     _notifyListeners();
@@ -97,6 +158,7 @@ export async function runQuery<T = Record<string, unknown>>(
         durationMs: Math.round(performance.now() - start),
         rowCount: 0,
         error: (e as Error).message,
+        group: _currentGroup || undefined,
       },
     ];
     _notifyListeners();

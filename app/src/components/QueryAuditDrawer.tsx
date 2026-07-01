@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   getQueryLog,
+  getGroupedLog,
   clearQueryLog,
   onQueryLogChange,
   type QueryLogEntry,
+  type QueryGroup,
 } from "../lib/neo4j";
 
 function truncateValue(v: unknown): unknown {
@@ -19,26 +21,35 @@ function truncateValue(v: unknown): unknown {
 
 export default function QueryAuditDrawer() {
   const [open, setOpen] = useState(false);
-  const [log, setLog] = useState<QueryLogEntry[]>([]);
-  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [groups, setGroups] = useState<QueryGroup[]>([]);
+  const [logCount, setLogCount] = useState(0);
+  const [expandedGroup, setExpandedGroup] = useState<number | null>(null);
+  const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
 
   useEffect(() => {
-    setLog(getQueryLog());
-    return onQueryLogChange(() => setLog([...getQueryLog()]));
+    const update = () => {
+      setGroups([...getGroupedLog()]);
+      setLogCount(getQueryLog().length);
+    };
+    update();
+    return onQueryLogChange(update);
   }, []);
 
   const toggle = useCallback(() => setOpen((o) => !o), []);
 
   const handleClear = useCallback(() => {
     clearQueryLog();
-    setExpandedId(null);
+    setExpandedGroup(null);
+    setExpandedEntry(null);
   }, []);
 
   const copyAll = useCallback(() => {
+    const log = getQueryLog();
     const text = log
       .map((e) => {
-        let s = `-- [${e.timestamp.toLocaleTimeString()}] ${e.durationMs}ms, ${e.rowCount} rows${e.error ? " ERROR" : ""}\n`;
-        s += e.cypher + ";";
+        let s = `-- [${e.timestamp.toLocaleTimeString()}] ${e.durationMs}ms, ${e.rowCount} rows${e.error ? " ERROR" : ""}`;
+        if (e.group) s += ` (${e.group})`;
+        s += "\n" + e.cypher + ";";
         if (Object.keys(e.params).length > 0) {
           s += `\n-- params: ${JSON.stringify(e.params, null, 2)}`;
         }
@@ -46,104 +57,168 @@ export default function QueryAuditDrawer() {
       })
       .join("\n\n");
     navigator.clipboard.writeText(text);
-  }, [log]);
+  }, []);
 
   return (
     <>
-      {/* Toggle button */}
       <button onClick={toggle} className="audit-toggle">
         <span className="audit-toggle-icon">{open ? ">" : "<"}</span>
         <span className="audit-toggle-label">
-          Cypher ({log.length})
+          Cypher ({logCount})
         </span>
       </button>
 
-      {/* Drawer */}
       <div className={`audit-drawer ${open ? "open" : ""}`}>
         <div className="audit-header">
           <h3>Cypher Audit Log</h3>
           <div className="audit-actions">
-            <button onClick={copyAll} className="audit-btn">
-              Copy All
-            </button>
-            <button onClick={handleClear} className="audit-btn">
-              Clear
-            </button>
+            <button onClick={copyAll} className="audit-btn">Copy All</button>
+            <button onClick={handleClear} className="audit-btn">Clear</button>
           </div>
         </div>
 
         <div className="audit-entries">
-          {log.length === 0 && (
+          {groups.length === 0 && (
             <div className="audit-empty">
               No queries yet. Interact with the app to see Cypher statements.
             </div>
           )}
-          {[...log].reverse().map((entry) => (
-            <div
-              key={entry.id}
-              className={`audit-entry ${entry.error ? "error" : ""}`}
-              onClick={() =>
-                setExpandedId(expandedId === entry.id ? null : entry.id)
-              }
-            >
-              <div className="audit-entry-header">
-                <span className="audit-time">
-                  {entry.timestamp.toLocaleTimeString()}
-                </span>
-                <span className="audit-duration">{entry.durationMs}ms</span>
-                <span className="audit-rows">
-                  {entry.error ? (
-                    <span className="audit-error-badge">ERR</span>
-                  ) : (
-                    `${entry.rowCount} rows`
-                  )}
-                </span>
-              </div>
-              <div className="audit-cypher-preview">
-                {entry.cypher.split("\n")[0].trim().substring(0, 80)}
-                {entry.cypher.length > 80 ? "..." : ""}
-              </div>
-
-              {expandedId === entry.id && (
-                <div className="audit-expanded">
-                  <pre className="audit-cypher-full">{entry.cypher}</pre>
-                  {Object.keys(entry.params).length > 0 && (
-                    <div className="audit-params">
-                      <strong>Parameters:</strong>
-                      <pre>
-                        {JSON.stringify(
-                          entry.params,
-                          (_k, v) =>
-                            typeof v === "string" && v.length > 200
-                              ? v.substring(0, 200) + "..."
-                              : v,
-                          2
-                        )}
-                      </pre>
-                    </div>
-                  )}
-                  {entry.error && (
-                    <div className="audit-error-detail">{entry.error}</div>
-                  )}
-                  {entry.results && entry.results.length > 0 && (
-                    <ResultsSection results={entry.results} total={entry.rowCount} />
-                  )}
-                  <button
-                    className="audit-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      navigator.clipboard.writeText(entry.cypher);
-                    }}
-                  >
-                    Copy Query
-                  </button>
-                </div>
-              )}
-            </div>
+          {[...groups].reverse().map((group, gi) => (
+            <GroupView
+              key={gi}
+              group={group}
+              groupIndex={gi}
+              isExpanded={expandedGroup === gi}
+              onToggle={() => setExpandedGroup(expandedGroup === gi ? null : gi)}
+              expandedEntry={expandedEntry}
+              onToggleEntry={(id) => setExpandedEntry(expandedEntry === id ? null : id)}
+            />
           ))}
         </div>
       </div>
     </>
+  );
+}
+
+function GroupView({
+  group,
+  groupIndex: _gi,
+  isExpanded,
+  onToggle,
+  expandedEntry,
+  onToggleEntry,
+}: {
+  group: QueryGroup;
+  groupIndex: number;
+  isExpanded: boolean;
+  onToggle: () => void;
+  expandedEntry: number | null;
+  onToggleEntry: (id: number) => void;
+}) {
+  const isSingle = group.entries.length === 1 && !group.entries[0].group;
+
+  if (isSingle) {
+    // Ungrouped single query — render flat
+    const entry = group.entries[0];
+    return (
+      <EntryView
+        entry={entry}
+        isExpanded={expandedEntry === entry.id}
+        onToggle={() => onToggleEntry(entry.id)}
+      />
+    );
+  }
+
+  return (
+    <div className={`audit-group ${group.hasError ? "error" : ""}`}>
+      <div className="audit-group-header" onClick={onToggle}>
+        <span className="audit-group-expand">{isExpanded ? "▼" : "▶"}</span>
+        <span className="audit-group-label">{group.label}</span>
+        <span className="audit-duration">{group.totalMs}ms</span>
+        <span className="audit-rows">{group.entries.length} queries</span>
+        {group.hasError && <span className="audit-error-badge">ERR</span>}
+      </div>
+      {isExpanded && (
+        <div className="audit-group-entries">
+          {group.entries.map((entry) => (
+            <EntryView
+              key={entry.id}
+              entry={entry}
+              isExpanded={expandedEntry === entry.id}
+              onToggle={() => onToggleEntry(entry.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EntryView({
+  entry,
+  isExpanded,
+  onToggle,
+}: {
+  entry: QueryLogEntry;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      className={`audit-entry ${entry.error ? "error" : ""}`}
+      onClick={onToggle}
+    >
+      <div className="audit-entry-header">
+        <span className="audit-time">
+          {entry.timestamp.toLocaleTimeString()}
+        </span>
+        <span className="audit-duration">{entry.durationMs}ms</span>
+        <span className="audit-rows">
+          {entry.error ? (
+            <span className="audit-error-badge">ERR</span>
+          ) : (
+            `${entry.rowCount} rows`
+          )}
+        </span>
+      </div>
+      <div className="audit-cypher-preview">
+        {entry.cypher.split("\n").find(l => l.trim() && !l.trim().startsWith("//"))?.trim().substring(0, 80) || entry.cypher.substring(0, 80)}
+        {entry.cypher.length > 80 ? "..." : ""}
+      </div>
+
+      {isExpanded && (
+        <div className="audit-expanded" onClick={(e) => e.stopPropagation()}>
+          <pre className="audit-cypher-full">{entry.cypher}</pre>
+          {Object.keys(entry.params).length > 0 && (
+            <div className="audit-params">
+              <strong>Parameters:</strong>
+              <pre>
+                {JSON.stringify(
+                  entry.params,
+                  (_k, v) =>
+                    typeof v === "string" && v.length > 200
+                      ? v.substring(0, 200) + "..."
+                      : v,
+                  2
+                )}
+              </pre>
+            </div>
+          )}
+          {entry.error && (
+            <div className="audit-error-detail">{entry.error}</div>
+          )}
+          {entry.results && entry.results.length > 0 && (
+            <ResultsSection results={entry.results} total={entry.rowCount} />
+          )}
+          <button
+            className="audit-btn"
+            onClick={() => navigator.clipboard.writeText(entry.cypher)}
+          >
+            Copy Query
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

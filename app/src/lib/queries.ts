@@ -1,4 +1,4 @@
-import { runQuery } from "./neo4j";
+import { runQuery, withGroup } from "./neo4j";
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -149,7 +149,7 @@ export async function getProductBOMGraph(sku: string): Promise<{ nodes: BOMGraph
 }
 
 export async function getCommunities(): Promise<CommunityMember[]> {
-  // Build co-occurrence, project, run Louvain, clean up
+  return withGroup("GDS Community Detection", async () => {
   await runQuery(`
     MATCH (i1:Ingredient)<-[:CONTAINS*]-(p:Product)-[:CONTAINS*]->(i2:Ingredient)
     WHERE elementId(i1) < elementId(i2)
@@ -181,6 +181,7 @@ export async function getCommunities(): Promise<CommunityMember[]> {
   await runQuery(`MATCH ()-[r:CO_OCCURS]-() DELETE r`);
 
   return communities;
+  });
 }
 
 export async function getIncompatibilities(): Promise<IncompatibilityPair[]> {
@@ -194,6 +195,7 @@ export async function getIncompatibilities(): Promise<IncompatibilityPair[]> {
 // ── Explore: RDF classification via n20s ───────────────────────
 
 export async function getRDFClassification(ingredientName: string): Promise<string[]> {
+  return withGroup(`RDFS Classification: ${ingredientName}`, async () => {
   const safeName = ingredientName.replace(/[^a-zA-Z0-9]/g, "");
   const rows = await runQuery<{ className: string }>(`
     MATCH (i:Ingredient {name: $name})
@@ -218,6 +220,7 @@ export async function getRDFClassification(ingredientName: string): Promise<stri
   // Cleanup
   await runQuery(`CALL n20s.graph.drop('explore_tmp') YIELD graphName RETURN graphName`).catch(() => {});
   return rows.map(r => r.className);
+  });
 }
 
 // ── Formulate queries ──────────────────────────────────────────
@@ -254,6 +257,7 @@ export async function checkIncompatibility(
 export async function validateCandidate(
   ingredients: { name: string; concentration: number }[]
 ): Promise<{ violations: Violation[]; shacl: SHACLResult[] }> {
+  return withGroup("n20s Compliance Check", async () => {
   // Clean any existing graph
   await runQuery(
     `CALL n20s.graph.drop('validation') YIELD graphName RETURN graphName`
@@ -360,11 +364,13 @@ export async function validateCandidate(
   ).catch(() => {});
 
   return { violations, shacl };
+  });
 }
 
 export async function exportTurtle(
   ingredients: { name: string; concentration: number }[]
 ): Promise<string> {
+  return withGroup("Turtle Export for Audit", async () => {
   // Clean any existing graph
   await runQuery(
     `CALL n20s.graph.drop('export') YIELD graphName RETURN graphName`
@@ -410,4 +416,5 @@ export async function exportTurtle(
   ).catch(() => {});
 
   return rows[0]?.turtle || "";
+  });
 }

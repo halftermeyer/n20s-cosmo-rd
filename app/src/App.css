@@ -377,6 +377,52 @@
   font-size: 13px;
 }
 
+/* Audit groups */
+.audit-group {
+  margin-bottom: 6px;
+  border-radius: 6px;
+  background: #1a1a30;
+  border: 1px solid #2e2e4a;
+  overflow: hidden;
+}
+
+.audit-group.error {
+  border-left: 3px solid #e53935;
+}
+
+.audit-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+.audit-group-header:hover {
+  background: #22224a;
+}
+
+.audit-group-expand {
+  font-size: 10px;
+  color: #888;
+  width: 12px;
+}
+
+.audit-group-label {
+  font-weight: 600;
+  color: #c5c8f0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-group-entries {
+  padding: 2px 4px 4px;
+}
+
 .audit-entry {
   margin-bottom: 4px;
   padding: 8px 12px;

@@ -1,4 +1,4 @@
-import { runQuery } from "./neo4j";
+import { runQuery, withGroup } from "./neo4j";
 
 // ═══════════════════════════════════════════════════════════════
 // Scenario 1: Regulatory Change Impact Analysis
@@ -24,6 +24,7 @@ export async function runRegulatoryChangeImpact(
   ingredientClass: string, // e.g. "RetinoidAgent"
   newLimitFraction: number
 ): Promise<RegulatoryImpact[]> {
+  return withGroup(`Regulatory Impact: ${market} ${ingredientClass} @ ${(newLimitFraction*100).toFixed(1)}%`, async () => {
   // Step 1: Cypher deep traversal — find all products sold in this market
   // that contain ingredients of the given class, compute concentrations
   const rows = await runQuery<{
@@ -85,6 +86,7 @@ export async function runRegulatoryChangeImpact(
       newLimitPct,
       status,
     };
+  });
   });
 }
 
@@ -180,6 +182,7 @@ export interface PhotosensitiveHit {
 export async function runPhotosensitiveCheck(
   thresholdFraction: number
 ): Promise<PhotosensitiveHit[]> {
+  return withGroup(`Photosensitive Agent Scan (>${(thresholdFraction*100).toFixed(2)}%)`, async () => {
   const graphName = "photosensitive";
 
   await runQuery(
@@ -269,6 +272,7 @@ export async function runPhotosensitiveCheck(
       concentrationPct: r.concentrationPct,
       inferredClasses: classesByName[r.ingredient] || [],
     }));
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -301,6 +305,7 @@ export async function runSupplierDisruption(
   supplier: { name: string; country: string };
   impacts: SupplierImpact[];
 }> {
+  return withGroup(`Supplier Disruption: ${supplierName}`, async () => {
   // Step 1: Find supplier and all affected ingredients
   const supplierInfo = await runQuery<{ name: string; country: string }>(`
     MATCH (s:Supplier {name: $name})
@@ -345,6 +350,7 @@ export async function runSupplierDisruption(
   }
 
   return { supplier: supplierInfo[0], impacts: impactsWithSubs };
+  });
 }
 
 export async function validateSubstitution(
@@ -352,6 +358,7 @@ export async function validateSubstitution(
   originalIngredient: string,
   substituteIngredient: string
 ): Promise<SubstitutionValidation> {
+  return withGroup(`Validate Swap: ${originalIngredient} → ${substituteIngredient}`, async () => {
   const graphName = "sub_validation";
 
   await runQuery(
@@ -456,6 +463,7 @@ export async function validateSubstitution(
     violations: violations.map((v) => ({ ingredient: v.label, market: v.market, actual: Number(v.actual), limit: Number(v.limit) })),
     status: violations.length === 0 ? "pass" : "fail",
   };
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -476,6 +484,7 @@ export interface AllergenPropagation {
 export async function runAllergenPropagation(
   ingredientName: string
 ): Promise<AllergenPropagation> {
+  return withGroup(`Allergen Reclassification: ${ingredientName}`, async () => {
   const graphName = "allergen_prop";
 
   await runQuery(
@@ -576,6 +585,7 @@ export async function runAllergenPropagation(
         message: s.message,
       })),
   };
+  });
 }
 
 // Helper: list suppliers for the dropdown

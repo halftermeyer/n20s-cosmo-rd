@@ -1,4 +1,56 @@
 import { runQuery, withGroup } from "./neo4j";
+import {
+  n20sAddTurtle, n20sQuery, n20sQueryWithRules,
+  n20sInfer, n20sValidate, n20sToTurtle, n20sDropSafe,
+} from "./n20s";
+
+// Helper: fetch a turtle property from Neo4j by Cypher
+async function fetchTurtles(cypher: string, params: Record<string, unknown> = {}): Promise<string[]> {
+  const rows = await runQuery<{ turtle: string }>(cypher, params);
+  return rows.map((r) => r.turtle).filter(Boolean);
+}
+
+// Shared SPARQL + rules for multi-market validation
+const MARKET_RULES = `
+[eu_violation:
+  (?ing http://example.org/cosmo#actualConcentration ?actual)
+  (?ing http://example.org/cosmo#maxConcentrationEU ?limit)
+  greaterThan(?actual, ?limit)
+  (?ing http://www.w3.org/2000/01/rdf-schema#label ?name)
+  -> (?ing http://example.org/cosmo#violatesEU ?name)]
+[us_violation:
+  (?ing http://example.org/cosmo#actualConcentration ?actual)
+  (?ing http://example.org/cosmo#maxConcentrationUS ?limit)
+  greaterThan(?actual, ?limit)
+  (?ing http://www.w3.org/2000/01/rdf-schema#label ?name)
+  -> (?ing http://example.org/cosmo#violatesUS ?name)]
+[china_violation:
+  (?ing http://example.org/cosmo#actualConcentration ?actual)
+  (?ing http://example.org/cosmo#maxConcentrationChina ?limit)
+  greaterThan(?actual, ?limit)
+  (?ing http://www.w3.org/2000/01/rdf-schema#label ?name)
+  -> (?ing http://example.org/cosmo#violatesChina ?name)]
+[japan_violation:
+  (?ing http://example.org/cosmo#actualConcentration ?actual)
+  (?ing http://example.org/cosmo#maxConcentrationJapan ?limit)
+  greaterThan(?actual, ?limit)
+  (?ing http://www.w3.org/2000/01/rdf-schema#label ?name)
+  -> (?ing http://example.org/cosmo#violatesJapan ?name)]
+`;
+
+const MARKET_SPARQL = `
+PREFIX cosmo: <http://example.org/cosmo#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?label ?actual ?limit ?market WHERE {
+  { ?ing cosmo:violatesEU ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationEU ?limit . BIND("EU" AS ?market) }
+  UNION
+  { ?ing cosmo:violatesUS ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationUS ?limit . BIND("US" AS ?market) }
+  UNION
+  { ?ing cosmo:violatesChina ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationChina ?limit . BIND("China" AS ?market) }
+  UNION
+  { ?ing cosmo:violatesJapan ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationJapan ?limit . BIND("Japan" AS ?market) }
+}
+`;
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -196,30 +248,31 @@ export async function getIncompatibilities(): Promise<IncompatibilityPair[]> {
 
 export async function getRDFClassification(ingredientName: string): Promise<string[]> {
   return withGroup(`RDFS Classification: ${ingredientName}`, async () => {
-  const safeName = ingredientName.replace(/[^a-zA-Z0-9]/g, "");
-  const rows = await runQuery<{ className: string }>(`
-    MATCH (i:Ingredient {name: $name})
-    CALL n20s.graph.addTurtle('explore_tmp', i.turtle)
-    YIELD graphName
-    WITH graphName
-    MATCH (ont:Ontology {name: 'cosmo'})
-    CALL n20s.graph.addTurtle('explore_tmp', ont.turtle)
-    YIELD graphName AS g2
-    WITH g2
-    CALL n20s.graph.query('explore_tmp', '
+    const g = "explore_tmp";
+    const safeName = ingredientName.replace(/[^a-zA-Z0-9]/g, "");
+    await n20sDropSafe(g);
+
+    // Fetch turtles from Neo4j, then load into n20s
+    const [ingTurtles, ontTurtles] = await Promise.all([
+      fetchTurtles(`MATCH (i:Ingredient {name: $name}) RETURN i.turtle AS turtle`, { name: ingredientName }),
+      fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`),
+    ]);
+    for (const t of [...ingTurtles, ...ontTurtles]) await n20sAddTurtle(g, t);
+
+    // RDFS query
+    const rows = await n20sQuery(g, `
       PREFIX cosmo: <http://example.org/cosmo#>
       PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
       SELECT ?className WHERE {
         cosmo:${safeName} rdf:type ?className .
         FILTER(STRSTARTS(STR(?className), "http://example.org/cosmo#"))
       }
-    ', 'RDFS') YIELD row
-    WITH replace(row.className, 'http://example.org/cosmo#', '') AS className
-    RETURN className
-  `, { name: ingredientName });
-  // Cleanup
-  await runQuery(`CALL n20s.graph.drop('explore_tmp') YIELD graphName RETURN graphName`).catch(() => {});
-  return rows.map(r => r.className);
+    `, "RDFS");
+
+    await n20sDropSafe(g);
+    return rows.map((r) =>
+      String(r.className).replace("http://example.org/cosmo#", "")
+    );
   });
 }
 
@@ -258,112 +311,51 @@ export async function validateCandidate(
   ingredients: { name: string; concentration: number }[]
 ): Promise<{ violations: Violation[]; shacl: SHACLResult[] }> {
   return withGroup("n20s Compliance Check", async () => {
-  // Clean any existing graph
-  await runQuery(
-    `CALL n20s.graph.drop('validation') YIELD graphName RETURN graphName`
-  ).catch(() => {});
+    const g = "validation";
+    await n20sDropSafe(g);
 
-  // Load ingredient turtles
-  const names = ingredients.map((i) => i.name);
-  await runQuery(
-    `
-    MATCH (i:Ingredient) WHERE i.name IN $names
-    WITH collect(i.turtle) AS turtles
-    UNWIND turtles AS t
-    CALL n20s.graph.addTurtle('validation', t)
-    YIELD graphName, added
-    RETURN graphName, sum(added) AS total
-  `,
-    { names }
-  );
+    // Fetch turtles from Neo4j
+    const names = ingredients.map((i) => i.name);
+    const [ingTurtles, ontTurtles, shaclTurtles] = await Promise.all([
+      fetchTurtles(`MATCH (i:Ingredient) WHERE i.name IN $names RETURN i.turtle AS turtle`, { names }),
+      fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`),
+      fetchTurtles(`MATCH (s:SHACLRules {name: 'cosmo_validation'}) RETURN s.turtle AS turtle`),
+    ]);
 
-  // Build concentration turtle
-  const concLines = ingredients
-    .map((i) => {
+    // Load into n20s
+    for (const t of [...ingTurtles, ...ontTurtles, ...shaclTurtles]) {
+      await n20sAddTurtle(g, t);
+    }
+
+    // Add concentration triples
+    const concLines = ingredients.map((i) => {
       const safeName = i.name.replace(/[^a-zA-Z0-9]/g, "");
       return `cosmo:${safeName} cosmo:actualConcentration "${i.concentration}"^^xsd:double .`;
-    })
-    .join("\n");
+    }).join("\n");
+    await n20sAddTurtle(g,
+      `@prefix cosmo: <http://example.org/cosmo#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${concLines}`
+    );
 
-  const concTurtle = `@prefix cosmo: <http://example.org/cosmo#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${concLines}`;
+    // Run rules + SHACL
+    const ruleRows = await n20sQueryWithRules(g, MARKET_SPARQL, MARKET_RULES, "RDFS");
+    const violations: Violation[] = ruleRows.map((r) => ({
+      label: String(r.label),
+      actual: Number(r.actual),
+      limit: Number(r.limit),
+      market: String(r.market),
+    }));
 
-  await runQuery(`
-    CALL n20s.graph.addTurtle('validation', $turtle)
-    YIELD graphName, added
-    RETURN added
-  `, { turtle: concTurtle });
+    const shaclRows = await n20sValidate(g);
+    const shacl: SHACLResult[] = shaclRows
+      .filter((s) => s.focusNode != null)
+      .map((s) => ({
+        focusNode: String(s.focusNode),
+        severity: String(s.severity),
+        message: String(s.message),
+      }));
 
-  // Add ontology + SHACL
-  await runQuery(`
-    MATCH (ont:Ontology {name: 'cosmo'})
-    CALL n20s.graph.addTurtle('validation', ont.turtle)
-    YIELD graphName, added
-    RETURN added
-  `);
-
-  await runQuery(`
-    MATCH (sh:SHACLRules {name: 'cosmo_validation'})
-    CALL n20s.graph.addTurtle('validation', sh.turtle)
-    YIELD graphName, added
-    RETURN added
-  `);
-
-  // Run rules check — all 4 markets in one pass
-  const violations = await runQuery<Violation>(`
-    CALL n20s.graph.queryWithRules('validation', '
-      PREFIX cosmo: <http://example.org/cosmo#>
-      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-      SELECT ?label ?actual ?limit ?market WHERE {
-        { ?ing cosmo:violatesEU ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationEU ?limit . BIND("EU" AS ?market) }
-        UNION
-        { ?ing cosmo:violatesUS ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationUS ?limit . BIND("US" AS ?market) }
-        UNION
-        { ?ing cosmo:violatesChina ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationChina ?limit . BIND("China" AS ?market) }
-        UNION
-        { ?ing cosmo:violatesJapan ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationJapan ?limit . BIND("Japan" AS ?market) }
-      }
-    ', '
-    [eu_violation:
-      (?ing http://example.org/cosmo#actualConcentration ?actual)
-      (?ing http://example.org/cosmo#maxConcentrationEU ?limit)
-      greaterThan(?actual, ?limit)
-      (?ing http://www.w3.org/2000/01/rdf-schema#label ?name)
-      -> (?ing http://example.org/cosmo#violatesEU ?name)]
-    [us_violation:
-      (?ing http://example.org/cosmo#actualConcentration ?actual)
-      (?ing http://example.org/cosmo#maxConcentrationUS ?limit)
-      greaterThan(?actual, ?limit)
-      (?ing http://www.w3.org/2000/01/rdf-schema#label ?name)
-      -> (?ing http://example.org/cosmo#violatesUS ?name)]
-    [china_violation:
-      (?ing http://example.org/cosmo#actualConcentration ?actual)
-      (?ing http://example.org/cosmo#maxConcentrationChina ?limit)
-      greaterThan(?actual, ?limit)
-      (?ing http://www.w3.org/2000/01/rdf-schema#label ?name)
-      -> (?ing http://example.org/cosmo#violatesChina ?name)]
-    [japan_violation:
-      (?ing http://example.org/cosmo#actualConcentration ?actual)
-      (?ing http://example.org/cosmo#maxConcentrationJapan ?limit)
-      greaterThan(?actual, ?limit)
-      (?ing http://www.w3.org/2000/01/rdf-schema#label ?name)
-      -> (?ing http://example.org/cosmo#violatesJapan ?name)]
-    ', 'RDFS') YIELD row
-    RETURN row.label AS label, row.actual AS actual, row.limit AS limit, row.market AS market
-  `);
-
-  // Run SHACL validation
-  const shacl = await runQuery<SHACLResult>(`
-    CALL n20s.graph.validate('validation')
-    YIELD focusNode, severity, message
-    RETURN focusNode, severity, message
-  `);
-
-  // Cleanup
-  await runQuery(
-    `CALL n20s.graph.drop('validation') YIELD graphName RETURN graphName`
-  ).catch(() => {});
-
-  return { violations, shacl };
+    await n20sDropSafe(g);
+    return { violations, shacl };
   });
 }
 
@@ -371,50 +363,19 @@ export async function exportTurtle(
   ingredients: { name: string; concentration: number }[]
 ): Promise<string> {
   return withGroup("Turtle Export for Audit", async () => {
-  // Clean any existing graph
-  await runQuery(
-    `CALL n20s.graph.drop('export') YIELD graphName RETURN graphName`
-  ).catch(() => {});
+    const g = "export";
+    await n20sDropSafe(g);
 
-  const names = ingredients.map((i) => i.name);
-  await runQuery(
-    `
-    MATCH (i:Ingredient) WHERE i.name IN $names
-    WITH collect(i.turtle) AS turtles
-    UNWIND turtles AS t
-    CALL n20s.graph.addTurtle('export', t)
-    YIELD graphName, added
-    RETURN sum(added) AS total
-  `,
-    { names }
-  );
+    const names = ingredients.map((i) => i.name);
+    const [ingTurtles, ontTurtles] = await Promise.all([
+      fetchTurtles(`MATCH (i:Ingredient) WHERE i.name IN $names RETURN i.turtle AS turtle`, { names }),
+      fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`),
+    ]);
 
-  // Add ontology
-  await runQuery(`
-    MATCH (ont:Ontology {name: 'cosmo'})
-    CALL n20s.graph.addTurtle('export', ont.turtle)
-    YIELD graphName, added
-    RETURN added
-  `);
-
-  // Forward-chain RDFS
-  await runQuery(`
-    CALL n20s.graph.infer('export', 'RDFS')
-    YIELD newTriples
-    RETURN newTriples
-  `);
-
-  // Export
-  const rows = await runQuery<{ turtle: string }>(`
-    CALL n20s.graph.toTurtle('export')
-    YIELD turtle
-    RETURN turtle
-  `);
-
-  await runQuery(
-    `CALL n20s.graph.drop('export') YIELD graphName RETURN graphName`
-  ).catch(() => {});
-
-  return rows[0]?.turtle || "";
+    for (const t of [...ingTurtles, ...ontTurtles]) await n20sAddTurtle(g, t);
+    await n20sInfer(g, "RDFS");
+    const turtle = await n20sToTurtle(g);
+    await n20sDropSafe(g);
+    return turtle;
   });
 }

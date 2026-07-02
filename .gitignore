@@ -12,3 +12,4 @@ package-lock.json
 assets/
 *.preview.md
 n20s-cosmo-rd-intro.*
+demo/

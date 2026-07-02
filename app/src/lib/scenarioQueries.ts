@@ -1,4 +1,35 @@
 import { runQuery, withGroup } from "./neo4j";
+import {
+  n20sAddTurtle, n20sQuery, n20sQueryWithRules,
+  n20sValidate, n20sDropSafe,
+} from "./n20s";
+
+// Helper: fetch turtle properties from Neo4j
+async function fetchTurtles(cypher: string, params: Record<string, unknown> = {}): Promise<string[]> {
+  const rows = await runQuery<{ turtle: string }>(cypher, params);
+  return rows.map((r) => r.turtle).filter(Boolean);
+}
+
+// Shared multi-market rules
+const MARKET_RULES = `
+[eu: (?ing http://example.org/cosmo#actualConcentration ?a) (?ing http://example.org/cosmo#maxConcentrationEU ?l) greaterThan(?a,?l) (?ing http://www.w3.org/2000/01/rdf-schema#label ?n) -> (?ing http://example.org/cosmo#violatesEU ?n)]
+[us: (?ing http://example.org/cosmo#actualConcentration ?a) (?ing http://example.org/cosmo#maxConcentrationUS ?l) greaterThan(?a,?l) (?ing http://www.w3.org/2000/01/rdf-schema#label ?n) -> (?ing http://example.org/cosmo#violatesUS ?n)]
+[cn: (?ing http://example.org/cosmo#actualConcentration ?a) (?ing http://example.org/cosmo#maxConcentrationChina ?l) greaterThan(?a,?l) (?ing http://www.w3.org/2000/01/rdf-schema#label ?n) -> (?ing http://example.org/cosmo#violatesChina ?n)]
+[jp: (?ing http://example.org/cosmo#actualConcentration ?a) (?ing http://example.org/cosmo#maxConcentrationJapan ?l) greaterThan(?a,?l) (?ing http://www.w3.org/2000/01/rdf-schema#label ?n) -> (?ing http://example.org/cosmo#violatesJapan ?n)]
+`;
+
+const MARKET_SPARQL = `
+PREFIX cosmo: <http://example.org/cosmo#>
+SELECT ?label ?actual ?limit ?market WHERE {
+  { ?ing cosmo:violatesEU ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationEU ?limit . BIND("EU" AS ?market) }
+  UNION
+  { ?ing cosmo:violatesUS ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationUS ?limit . BIND("US" AS ?market) }
+  UNION
+  { ?ing cosmo:violatesChina ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationChina ?limit . BIND("China" AS ?market) }
+  UNION
+  { ?ing cosmo:violatesJapan ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationJapan ?limit . BIND("Japan" AS ?market) }
+}
+`;
 
 // ═══════════════════════════════════════════════════════════════
 // Scenario 1: Regulatory Change Impact Analysis
@@ -95,72 +126,37 @@ export async function runRegulatoryChangeN20s(
   market: string,
   newLimitFraction: number
 ): Promise<{ ingredient: string; actual: number; limit: number; inferredClass: string }[]> {
-  const graphName = "reg_impact";
+  const g = "reg_impact";
+  await n20sDropSafe(g);
 
-  await runQuery(
-    `CALL n20s.graph.drop($g) YIELD graphName RETURN graphName`,
-    { g: graphName }
-  ).catch(() => {});
+  const [ingTurtles, ontTurtles] = await Promise.all([
+    fetchTurtles(`MATCH (i:Ingredient) WHERE i.turtle IS NOT NULL RETURN i.turtle AS turtle`),
+    fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`),
+  ]);
+  for (const t of [...ingTurtles, ...ontTurtles]) await n20sAddTurtle(g, t);
 
-  // Load all ingredients + ontology
-  await runQuery(
-    `
-    MATCH (i:Ingredient) WHERE i.turtle IS NOT NULL
-    WITH collect(i.turtle) AS turtles
-    UNWIND turtles AS t
-    CALL n20s.graph.addTurtle($g, t)
-    YIELD graphName, added
-    RETURN sum(added) AS total
-  `,
-    { g: graphName }
-  );
-
-  await runQuery(
-    `
-    MATCH (ont:Ontology {name: 'cosmo'})
-    CALL n20s.graph.addTurtle($g, ont.turtle)
-    YIELD graphName, added
-    RETURN added
-  `,
-    { g: graphName }
-  );
-
-  // Inject the new limit as a triple for ALL members of the class (via RDFS inference)
-  // Use queryWithRules to find all ingredients that are RetinoidAgents (including via subclass)
-  // and check against the new limit
   const marketProp = `maxConcentration${market}`;
-  const results = await runQuery<{
-    ingredient: string;
-    actual: number;
-    limit: number;
-    inferredClass: string;
-  }>(
-    `
-    CALL n20s.graph.query($g, '
-      PREFIX cosmo: <http://example.org/cosmo#>
-      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-      PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+  const rows = await n20sQuery(g, `
+    PREFIX cosmo: <http://example.org/cosmo#>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    SELECT ?label ?limit ?className WHERE {
+      ?ing cosmo:${marketProp} ?limit .
+      ?ing rdfs:label ?label .
+      ?ing rdf:type ?class .
+      FILTER(STRSTARTS(STR(?class), "http://example.org/cosmo#"))
+      BIND(REPLACE(STR(?class), "http://example.org/cosmo#", "") AS ?className)
+    }
+  `, "RDFS");
 
-      SELECT ?label ?limit ?className WHERE {
-        ?ing cosmo:${marketProp} ?limit .
-        ?ing rdfs:label ?label .
-        ?ing rdf:type ?class .
-        FILTER(STRSTARTS(STR(?class), "http://example.org/cosmo#"))
-        BIND(REPLACE(STR(?class), "http://example.org/cosmo#", "") AS ?className)
-      }
-    ', 'RDFS') YIELD row
-    RETURN row.label AS ingredient, toFloat(row.limit) AS actual,
-           $newLimit AS limit, row.className AS inferredClass
-  `,
-    { g: graphName, newLimit: newLimitFraction }
-  );
+  await n20sDropSafe(g);
 
-  await runQuery(
-    `CALL n20s.graph.drop($g) YIELD graphName RETURN graphName`,
-    { g: graphName }
-  ).catch(() => {});
-
-  return results;
+  return rows.map((r) => ({
+    ingredient: String(r.label),
+    actual: Number(r.limit),
+    limit: newLimitFraction,
+    inferredClass: String(r.className),
+  }));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -184,11 +180,7 @@ export async function runPhotosensitiveCheck(
 ): Promise<PhotosensitiveHit[]> {
   return withGroup(`Photosensitive Agent Scan (>${(thresholdFraction*100).toFixed(2)}%)`, async () => {
   const graphName = "photosensitive";
-
-  await runQuery(
-    `CALL n20s.graph.drop($g) YIELD graphName RETURN graphName`,
-    { g: graphName }
-  ).catch(() => {});
+  await n20sDropSafe(graphName);
 
   // Step 1: Cypher traversal — non-sunscreen products → BOM → ingredients
   const bomData = await runQuery<{
@@ -210,57 +202,37 @@ export async function runPhotosensitiveCheck(
     ORDER BY finalConc DESC
   `, { threshold: thresholdFraction });
 
-  // Step 2: Load unique ingredient turtles into n20s
+  // Step 2: Load unique ingredient turtles + ontology into n20s
   const uniqueTurtles = [...new Set(bomData.map((r) => r.turtle))];
-  for (const t of uniqueTurtles) {
-    await runQuery(
-      `CALL n20s.graph.addTurtle($g, $turtle) YIELD added RETURN added`,
-      { g: graphName, turtle: t }
-    );
-  }
+  for (const t of uniqueTurtles) await n20sAddTurtle(graphName, t);
 
-  // Add ontology for RDFS inference
-  await runQuery(
-    `
-    MATCH (ont:Ontology {name: 'cosmo'})
-    CALL n20s.graph.addTurtle($g, ont.turtle)
-    YIELD graphName, added
-    RETURN added
-  `,
-    { g: graphName }
-  );
+  const ontTurtles = await fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`);
+  for (const t of ontTurtles) await n20sAddTurtle(graphName, t);
 
   // Step 3: RDFS query — which ingredients are PhotosensitiveAgent?
-  const photoAgents = await runQuery<{ label: string; className: string }>(`
-    CALL n20s.graph.query($g, '
-      PREFIX cosmo: <http://example.org/cosmo#>
-      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-      PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+  const photoAgents = await n20sQuery(graphName, `
+    PREFIX cosmo: <http://example.org/cosmo#>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    SELECT ?label ?className WHERE {
+      ?ing rdf:type cosmo:PhotosensitiveAgent .
+      ?ing rdfs:label ?label .
+      ?ing rdf:type ?class .
+      FILTER(STRSTARTS(STR(?class), "http://example.org/cosmo#"))
+      BIND(REPLACE(STR(?class), "http://example.org/cosmo#", "") AS ?className)
+    }
+  `, "RDFS");
 
-      SELECT ?label ?className WHERE {
-        ?ing rdf:type cosmo:PhotosensitiveAgent .
-        ?ing rdfs:label ?label .
-        ?ing rdf:type ?class .
-        FILTER(STRSTARTS(STR(?class), "http://example.org/cosmo#"))
-        BIND(REPLACE(STR(?class), "http://example.org/cosmo#", "") AS ?className)
-      }
-    ', 'RDFS') YIELD row
-    RETURN row.label AS label, row.className AS className
-  `, { g: graphName });
-
-  await runQuery(
-    `CALL n20s.graph.drop($g) YIELD graphName RETURN graphName`,
-    { g: graphName }
-  ).catch(() => {});
+  await n20sDropSafe(graphName);
 
   // Cross-reference: which BOM entries involve PhotosensitiveAgents?
-  const photoNames = new Set(photoAgents.map((r) => r.label));
+  const photoNames = new Set(photoAgents.map((r) => String(r.label)));
   const classesByName: Record<string, string[]> = {};
   photoAgents.forEach((r) => {
-    if (!classesByName[r.label]) classesByName[r.label] = [];
-    if (!classesByName[r.label].includes(r.className)) {
-      classesByName[r.label].push(r.className);
-    }
+    const label = String(r.label);
+    const cls = String(r.className);
+    if (!classesByName[label]) classesByName[label] = [];
+    if (!classesByName[label].includes(cls)) classesByName[label].push(cls);
   });
 
   return bomData
@@ -359,12 +331,8 @@ export async function validateSubstitution(
   substituteIngredient: string
 ): Promise<SubstitutionValidation> {
   return withGroup(`Validate Swap: ${originalIngredient} → ${substituteIngredient}`, async () => {
-  const graphName = "sub_validation";
-
-  await runQuery(
-    `CALL n20s.graph.drop($g) YIELD graphName RETURN graphName`,
-    { g: graphName }
-  ).catch(() => {});
+  const g = "sub_validation";
+  await n20sDropSafe(g);
 
   // Get BOM with the substitution applied
   const bom = await runQuery<{ ingredient: string; conc: number; turtle: string }>(`
@@ -379,60 +347,29 @@ export async function validateSubstitution(
     RETURN ingredient, conc, turtle
   `, { sku: productSku, original: originalIngredient, substitute: substituteIngredient });
 
-  // Load into n20s
+  // Load turtles + concentrations + ontology into n20s
   const uniqueTurtles = [...new Set(bom.map((r) => r.turtle))];
-  for (const t of uniqueTurtles) {
-    await runQuery(
-      `CALL n20s.graph.addTurtle($g, $turtle) YIELD added RETURN added`,
-      { g: graphName, turtle: t }
-    );
-  }
+  for (const t of uniqueTurtles) await n20sAddTurtle(g, t);
 
-  // Add concentrations
   const concLines = bom.map((r) => {
     const safeName = r.ingredient.replace(/[^a-zA-Z0-9]/g, "");
     return `cosmo:${safeName} cosmo:actualConcentration "${r.conc}"^^xsd:double .`;
   }).join("\n");
-  const concTurtle = `@prefix cosmo: <http://example.org/cosmo#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${concLines}`;
-
-  await runQuery(
-    `CALL n20s.graph.addTurtle($g, $turtle) YIELD added RETURN added`,
-    { g: graphName, turtle: concTurtle }
+  await n20sAddTurtle(g,
+    `@prefix cosmo: <http://example.org/cosmo#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${concLines}`
   );
 
-  // Add ontology for RDFS class inference
-  await runQuery(`
-    MATCH (ont:Ontology {name: 'cosmo'})
-    CALL n20s.graph.addTurtle($g, ont.turtle)
-    YIELD graphName, added RETURN added
-  `, { g: graphName });
+  const ontTurtles = await fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`);
+  for (const t of ontTurtles) await n20sAddTurtle(g, t);
 
   // Run multi-market rules with RDFS
-  const violations = await runQuery<{ label: string; market: string; actual: number; limit: number }>(`
-    CALL n20s.graph.queryWithRules($g, '
-      PREFIX cosmo: <http://example.org/cosmo#>
-      SELECT ?label ?actual ?limit ?market WHERE {
-        { ?ing cosmo:violatesEU ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationEU ?limit . BIND("EU" AS ?market) }
-        UNION
-        { ?ing cosmo:violatesUS ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationUS ?limit . BIND("US" AS ?market) }
-        UNION
-        { ?ing cosmo:violatesChina ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationChina ?limit . BIND("China" AS ?market) }
-        UNION
-        { ?ing cosmo:violatesJapan ?label . ?ing cosmo:actualConcentration ?actual . ?ing cosmo:maxConcentrationJapan ?limit . BIND("Japan" AS ?market) }
-      }
-    ', '
-    [eu: (?ing http://example.org/cosmo#actualConcentration ?a) (?ing http://example.org/cosmo#maxConcentrationEU ?l) greaterThan(?a,?l) (?ing http://www.w3.org/2000/01/rdf-schema#label ?n) -> (?ing http://example.org/cosmo#violatesEU ?n)]
-    [us: (?ing http://example.org/cosmo#actualConcentration ?a) (?ing http://example.org/cosmo#maxConcentrationUS ?l) greaterThan(?a,?l) (?ing http://www.w3.org/2000/01/rdf-schema#label ?n) -> (?ing http://example.org/cosmo#violatesUS ?n)]
-    [cn: (?ing http://example.org/cosmo#actualConcentration ?a) (?ing http://example.org/cosmo#maxConcentrationChina ?l) greaterThan(?a,?l) (?ing http://www.w3.org/2000/01/rdf-schema#label ?n) -> (?ing http://example.org/cosmo#violatesChina ?n)]
-    [jp: (?ing http://example.org/cosmo#actualConcentration ?a) (?ing http://example.org/cosmo#maxConcentrationJapan ?l) greaterThan(?a,?l) (?ing http://www.w3.org/2000/01/rdf-schema#label ?n) -> (?ing http://example.org/cosmo#violatesJapan ?n)]
-    ', 'RDFS') YIELD row
-    RETURN row.label AS label, row.market AS market, row.actual AS actual, row.limit AS limit
-  `, { g: graphName });
+  const ruleRows = await n20sQueryWithRules(g, MARKET_SPARQL, MARKET_RULES, "RDFS");
+  const violations = ruleRows.map((v) => ({
+    ingredient: String(v.label), market: String(v.market),
+    actual: Number(v.actual), limit: Number(v.limit),
+  }));
 
-  await runQuery(
-    `CALL n20s.graph.drop($g) YIELD graphName RETURN graphName`,
-    { g: graphName }
-  ).catch(() => {});
+  await n20sDropSafe(g);
 
   // Compute full product cost: original vs substituted
   // sum(concentration × cost_per_kg) for all ingredients
@@ -485,16 +422,12 @@ export async function runAllergenPropagation(
   ingredientName: string
 ): Promise<AllergenPropagation> {
   return withGroup(`Allergen Reclassification: ${ingredientName}`, async () => {
-  const graphName = "allergen_prop";
-
-  await runQuery(
-    `CALL n20s.graph.drop($g) YIELD graphName RETURN graphName`,
-    { g: graphName }
-  ).catch(() => {});
+  const g = "allergen_prop";
+  await n20sDropSafe(g);
 
   // Step 1: Cypher traversal — find all products containing this ingredient
   const products = await runQuery<{
-    product: string;
+    name: string;
     concentrationPct: number;
     markets: string[];
   }>(`
@@ -502,53 +435,39 @@ export async function runAllergenPropagation(
     WITH p, i,
          reduce(conc = 1.0, r IN relationships(path) | conc * r.ratio) AS finalConc
     OPTIONAL MATCH (p)-[:SOLD_IN]->(m:Market)
-    WITH p.name AS product, round(finalConc * 100, 4) AS concentrationPct,
+    WITH p.name AS name, round(finalConc * 100, 4) AS concentrationPct,
          collect(DISTINCT m.name) AS markets
-    RETURN product AS name, concentrationPct, markets
+    RETURN name, concentrationPct, markets
     ORDER BY concentrationPct DESC
   `, { name: ingredientName });
 
   // Step 2: Load ingredient turtle + inject Allergen reclassification
-  // No full ontology needed — the ingredient's turtle already has its rdf:type classes,
-  // and we add the new Allergen type directly
   const safeName = ingredientName.replace(/[^a-zA-Z0-9]/g, "");
-
-  await runQuery(`
-    MATCH (i:Ingredient {name: $name})
-    CALL n20s.graph.addTurtle($g, i.turtle)
-    YIELD added RETURN added
-  `, { name: ingredientName, g: graphName });
-
-  // Inject the reclassification: this ingredient is now also an Allergen
-  await runQuery(`
-    CALL n20s.graph.addTurtle($g, $turtle)
-    YIELD added RETURN added
-  `, {
-    g: graphName,
-    turtle: `@prefix cosmo: <http://example.org/cosmo#> .\ncosmo:${safeName} a cosmo:Allergen .`,
-  });
+  const ingTurtles = await fetchTurtles(
+    `MATCH (i:Ingredient {name: $name}) RETURN i.turtle AS turtle`,
+    { name: ingredientName }
+  );
+  for (const t of ingTurtles) await n20sAddTurtle(g, t);
+  await n20sAddTurtle(g,
+    `@prefix cosmo: <http://example.org/cosmo#> .\ncosmo:${safeName} a cosmo:Allergen .`
+  );
 
   // Step 3: Get classification (no RDFS needed — types are explicit)
-  const classes = await runQuery<{ className: string }>(`
-    CALL n20s.graph.query($g, '
-      PREFIX cosmo: <http://example.org/cosmo#>
-      PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-      SELECT ?className WHERE {
-        cosmo:${safeName} rdf:type ?class .
-        FILTER(STRSTARTS(STR(?class), "http://example.org/cosmo#"))
-        BIND(REPLACE(STR(?class), "http://example.org/cosmo#", "") AS ?className)
-      }
-    ') YIELD row
-    RETURN row.className AS className
-  `, { g: graphName });
+  const classRows = await n20sQuery(g, `
+    PREFIX cosmo: <http://example.org/cosmo#>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    SELECT ?className WHERE {
+      cosmo:${safeName} rdf:type ?class .
+      FILTER(STRSTARTS(STR(?class), "http://example.org/cosmo#"))
+      BIND(REPLACE(STR(?class), "http://example.org/cosmo#", "") AS ?className)
+    }
+  `);
+  const classes = classRows.map((r) => ({ className: String(r.className) }));
 
-  // Step 4: Add minimal SHACL shape (allergens must declare EU limits) and validate
-  // We use a focused shape — NOT the full SHACL set which includes an expensive
-  // SPARQL concentration constraint that's irrelevant here
+  // Step 4: Minimal SHACL — allergens must declare EU limits
   const allergenShacl = [
     '@prefix sh: <http://www.w3.org/ns/shacl#> .',
     '@prefix cosmo: <http://example.org/cosmo#> .',
-    '@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .',
     'cosmo:AllergenLabelingShape a sh:NodeShape ;',
     '    sh:targetClass cosmo:Allergen ;',
     '    sh:property [',
@@ -557,22 +476,11 @@ export async function runAllergenPropagation(
     '        sh:message "EU regulation: Allergens must declare maxConcentrationEU for labeling compliance" ;',
     '    ] .',
   ].join('\n');
+  await n20sAddTurtle(g, allergenShacl);
 
-  await runQuery(`
-    CALL n20s.graph.addTurtle($g, $shacl)
-    YIELD added RETURN added
-  `, { g: graphName, shacl: allergenShacl });
+  const shaclResults = await n20sValidate(g);
 
-  const shaclResults = await runQuery<{ focusNode: string; message: string }>(`
-    CALL n20s.graph.validate($g)
-    YIELD focusNode, severity, message
-    RETURN focusNode, message
-  `, { g: graphName });
-
-  await runQuery(
-    `CALL n20s.graph.drop($g) YIELD graphName RETURN graphName`,
-    { g: graphName }
-  ).catch(() => {});
+  await n20sDropSafe(g);
 
   return {
     ingredient: ingredientName,
@@ -582,7 +490,7 @@ export async function runAllergenPropagation(
       .filter((s) => s.focusNode != null)
       .map((s) => ({
         focusNode: String(s.focusNode).replace("http://example.org/cosmo#", "cosmo:"),
-        message: s.message,
+        message: String(s.message),
       })),
   };
   });

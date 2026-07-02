@@ -20,14 +20,17 @@ interface Props {
 }
 
 // Functional slots for an anti-aging serum template
+// Slots with preferred defaults for demo — chosen to trigger multi-market scenarios
 const TEMPLATE_SLOTS = [
-  { category: "Humectant", label: "Humectant", defaultConc: 0.04, min: 0.01, max: 0.15 },
-  { category: "Emollient", label: "Emollient", defaultConc: 0.15, min: 0.05, max: 0.30 },
-  { category: "RetinoidAgent", label: "Retinoid Active", defaultConc: 0.005, min: 0.001, max: 0.15 },
-  { category: "Antioxidant", label: "Antioxidant", defaultConc: 0.02, min: 0.005, max: 0.10 },
-  { category: "Preservative", label: "Preservative", defaultConc: 0.008, min: 0.001, max: 0.03 },
-  { category: "VitaminDerivative", label: "Vitamin Derivative", defaultConc: 0.02, min: 0.005, max: 0.10 },
-  { category: "Peptide", label: "Peptide", defaultConc: 0.01, min: 0.001, max: 0.05 },
+  { category: "Humectant", label: "Humectant", defaultConc: 0.04, min: 0.01, max: 0.15, preferredIngredient: "Hyaluronic Acid" },
+  { category: "Emollient", label: "Emollient", defaultConc: 0.15, min: 0.05, max: 0.30, preferredIngredient: "Squalane" },
+  { category: "RetinoidAgent", label: "Retinoid Active", defaultConc: 0.005, min: 0.001, max: 0.15, preferredIngredient: "Retinol" },
+  { category: "Antioxidant", label: "Antioxidant", defaultConc: 0.02, min: 0.005, max: 0.10, preferredIngredient: "Tocopherol" },
+  { category: "Preservative", label: "Preservative", defaultConc: 0.008, min: 0.001, max: 0.03, preferredIngredient: "Phenoxyethanol" },
+  { category: "VitaminDerivative", label: "Vitamin Derivative", defaultConc: 0.02, min: 0.005, max: 0.10, preferredIngredient: "Niacinamide" },
+  { category: "Peptide", label: "Peptide", defaultConc: 0.01, min: 0.001, max: 0.05, preferredIngredient: "Matrixyl" },
+  { category: "AHAExfoliant", label: "AHA Exfoliant", defaultConc: 0.05, min: 0.005, max: 0.12, preferredIngredient: "Glycolic Acid" },
+  { category: "UVFilter", label: "UV Filter", defaultConc: 0.03, min: 0.005, max: 0.15, preferredIngredient: "Avobenzone" },
 ];
 
 export default function FormulateTab({ candidate, setCandidate }: Props) {
@@ -70,8 +73,11 @@ export default function FormulateTab({ candidate, setCandidate }: Props) {
     const initial: Record<number, { ingredient: Ingredient | null; concentration: number }> = {};
     TEMPLATE_SLOTS.forEach((slot, idx) => {
       const ings = ingredientsBySlot[slot.category] || [];
+      const preferred = slot.preferredIngredient
+        ? ings.find((i) => i.name === slot.preferredIngredient)
+        : null;
       initial[idx] = {
-        ingredient: ings[0] || null,
+        ingredient: preferred || ings[0] || null,
         concentration: slot.defaultConc,
       };
     });
@@ -146,7 +152,7 @@ export default function FormulateTab({ candidate, setCandidate }: Props) {
     <div>
       {/* Template selector */}
       <div className="card">
-        <h3>Anti-Aging Serum Formulation Template</h3>
+        <h3>Anti-Aging Day Serum — Formulation Template</h3>
         <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
           Select an ingredient for each functional slot and adjust concentrations.
           Incompatibilities are checked in real time.

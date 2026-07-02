@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Tabs } from "@neo4j-ndl/react";
 import ExploreTab from "./components/ExploreTab";
 import FormulateTab from "./components/FormulateTab";
-import ValidateTab from "./components/ValidateTab";
 import ScenariosTab from "./components/ScenariosTab";
 import ChatTab from "./components/ChatTab";
 import QueryAuditDrawer from "./components/QueryAuditDrawer";
@@ -10,11 +9,6 @@ import "./App.css";
 
 function App() {
   const [activeTab, setActiveTab] = useState("explore");
-
-  // Shared state: the candidate formulation built in Formulate tab
-  const [candidate, setCandidate] = useState<
-    { name: string; concentration: number; category: string }[]
-  >([]);
 
   return (
     <div className="app-container">
@@ -33,7 +27,6 @@ function App() {
         <Tabs fill="underline" onChange={setActiveTab} value={activeTab}>
           <Tabs.Tab id="explore">Explore</Tabs.Tab>
           <Tabs.Tab id="formulate">Formulate</Tabs.Tab>
-          <Tabs.Tab id="validate">Validate</Tabs.Tab>
           <Tabs.Tab id="scenarios">Scenarios</Tabs.Tab>
           <Tabs.Tab id="chat">Assistant</Tabs.Tab>
         </Tabs>
@@ -41,10 +34,7 @@ function App() {
 
       <main className="app-main">
         {activeTab === "explore" && <ExploreTab />}
-        {activeTab === "formulate" && (
-          <FormulateTab candidate={candidate} setCandidate={setCandidate} />
-        )}
-        {activeTab === "validate" && <ValidateTab candidate={candidate} />}
+        {activeTab === "formulate" && <FormulateTab />}
         {activeTab === "scenarios" && <ScenariosTab />}
         {activeTab === "chat" && <ChatTab />}
       </main>

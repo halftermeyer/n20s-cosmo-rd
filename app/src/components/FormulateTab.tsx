@@ -1,25 +1,17 @@
 import { useState, useEffect, useCallback } from "react";
-import { FilledButton, LoadingSpinner, Banner, Select } from "@neo4j-ndl/react";
+import { FilledButton, OutlinedButton, LoadingSpinner, Banner, Select } from "@neo4j-ndl/react";
 import {
   getCategories,
   getIngredientsByCategory,
   checkIncompatibility,
+  validateCandidate,
+  exportTurtle,
   type Ingredient,
   type IncompatibilityPair,
+  type Violation,
+  type SHACLResult,
 } from "../lib/queries";
 
-interface CandidateEntry {
-  name: string;
-  concentration: number;
-  category: string;
-}
-
-interface Props {
-  candidate: CandidateEntry[];
-  setCandidate: (c: CandidateEntry[]) => void;
-}
-
-// Functional slots for an anti-aging serum template
 // Slots with preferred defaults for demo — chosen to trigger multi-market scenarios
 const TEMPLATE_SLOTS = [
   { category: "Humectant", label: "Humectant", defaultConc: 0.04, min: 0.01, max: 0.15, preferredIngredient: "Hyaluronic Acid" },
@@ -33,16 +25,24 @@ const TEMPLATE_SLOTS = [
   { category: "UVFilter", label: "UV Filter", defaultConc: 0.03, min: 0.005, max: 0.15, preferredIngredient: "Avobenzone" },
 ];
 
-export default function FormulateTab({ candidate, setCandidate }: Props) {
+const MARKETS = ["EU", "US", "China", "Japan"];
+
+export default function FormulateTab() {
   const [categories, setCategories] = useState<string[]>([]);
-  const [ingredientsBySlot, setIngredientsBySlot] = useState<
-    Record<string, Ingredient[]>
-  >({});
+  const [ingredientsBySlot, setIngredientsBySlot] = useState<Record<string, Ingredient[]>>({});
   const [selections, setSelections] = useState<
     Record<number, { ingredient: Ingredient | null; concentration: number }>
   >({});
   const [incompatibilities, setIncompatibilities] = useState<IncompatibilityPair[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Validation state
+  const [violations, setViolations] = useState<Violation[]>([]);
+  const [shacl, setShacl] = useState<SHACLResult[]>([]);
+  const [validated, setValidated] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [turtle, setTurtle] = useState<string | null>(null);
+  const [loadingExport, setLoadingExport] = useState(false);
 
   useEffect(() => {
     getCategories()
@@ -50,7 +50,6 @@ export default function FormulateTab({ candidate, setCandidate }: Props) {
       .finally(() => setLoading(false));
   }, []);
 
-  // Load ingredients for each template slot
   useEffect(() => {
     const neededCats = TEMPLATE_SLOTS.map((s) => s.category);
     const uniqueCats = [...new Set(neededCats)];
@@ -67,7 +66,6 @@ export default function FormulateTab({ candidate, setCandidate }: Props) {
     });
   }, [categories]);
 
-  // Initialize selections with defaults
   useEffect(() => {
     if (Object.keys(ingredientsBySlot).length === 0) return;
     const initial: Record<number, { ingredient: Ingredient | null; concentration: number }> = {};
@@ -96,17 +94,13 @@ export default function FormulateTab({ candidate, setCandidate }: Props) {
     checkIncompatibility(names).then(setIncompatibilities);
   }, [selections]);
 
-  // Sync candidate state
-  const buildCandidate = useCallback(() => {
-    const entries: CandidateEntry[] = Object.entries(selections)
-      .filter(([, s]) => s.ingredient)
-      .map(([idx, s]) => ({
-        name: s.ingredient!.name,
-        concentration: s.concentration,
-        category: TEMPLATE_SLOTS[parseInt(idx)].category,
-      }));
-    setCandidate(entries);
-  }, [selections, setCandidate]);
+  // Reset validation when formulation changes
+  useEffect(() => {
+    setValidated(false);
+    setViolations([]);
+    setShacl([]);
+    setTurtle(null);
+  }, [selections]);
 
   const handleIngredientChange = (slotIdx: number, name: string) => {
     const slot = TEMPLATE_SLOTS[slotIdx];
@@ -125,6 +119,50 @@ export default function FormulateTab({ candidate, setCandidate }: Props) {
     }));
   };
 
+  // Build candidate from current selections
+  const buildCandidate = useCallback(() => {
+    return Object.entries(selections)
+      .filter(([, s]) => s.ingredient)
+      .map(([idx, s]) => ({
+        name: s.ingredient!.name,
+        concentration: s.concentration,
+        category: TEMPLATE_SLOTS[parseInt(idx)].category,
+      }));
+  }, [selections]);
+
+  // Run validation
+  const runValidation = useCallback(async () => {
+    const candidate = buildCandidate();
+    if (candidate.length === 0) return;
+    setValidating(true);
+    setValidated(false);
+    setTurtle(null);
+    try {
+      const result = await validateCandidate(candidate);
+      setViolations(result.violations);
+      setShacl(result.shacl);
+      setValidated(true);
+    } catch (e: unknown) {
+      setShacl([{ focusNode: "error", severity: "Error", message: (e as Error).message }]);
+      setValidated(true);
+    }
+    setValidating(false);
+  }, [buildCandidate]);
+
+  // Export turtle
+  const runExport = useCallback(async () => {
+    const candidate = buildCandidate();
+    if (candidate.length === 0) return;
+    setLoadingExport(true);
+    try {
+      const t = await exportTurtle(candidate);
+      setTurtle(t);
+    } catch (e: unknown) {
+      setTurtle(`Error: ${(e as Error).message}`);
+    }
+    setLoadingExport(false);
+  }, [buildCandidate]);
+
   if (loading) {
     return (
       <div className="loading-container">
@@ -134,23 +172,41 @@ export default function FormulateTab({ candidate, setCandidate }: Props) {
     );
   }
 
-  // Compute water percentage
   const totalActive = Object.values(selections).reduce(
     (sum, s) => sum + (s.ingredient ? s.concentration : 0),
     0
   );
   const waterPct = Math.max(0, (1 - totalActive) * 100);
 
-  // Check which ingredients are involved in incompatibilities
   const incompatibleNames = new Set<string>();
   incompatibilities.forEach((p) => {
     incompatibleNames.add(p.a);
     incompatibleNames.add(p.b);
   });
 
+  const candidate = buildCandidate();
+
+  // Compliance matrix helper
+  const getMarketStatus = (
+    ingredientName: string
+  ): Record<string, { status: "pass" | "fail" | "na"; limit?: number }> => {
+    const statuses: Record<string, { status: "pass" | "fail" | "na"; limit?: number }> = {};
+    MARKETS.forEach((market) => {
+      const violation = violations.find(
+        (v) => v.label === ingredientName && v.market === market
+      );
+      if (violation) {
+        statuses[market] = { status: "fail", limit: Number(violation.limit) };
+      } else {
+        statuses[market] = { status: validated ? "pass" : "na" };
+      }
+    });
+    return statuses;
+  };
+
   return (
     <div>
-      {/* Template selector */}
+      {/* ── Formulation ─────────────────────────────────────── */}
       <div className="card">
         <h3>Anti-Aging Day Serum — Formulation Template</h3>
         <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
@@ -237,45 +293,160 @@ export default function FormulateTab({ candidate, setCandidate }: Props) {
         </Banner>
       )}
 
-      {/* Build candidate button */}
-      <div className="button-group" style={{ justifyContent: "center", margin: "16px 0" }}>
-        <FilledButton
-          size="medium"
-          onClick={buildCandidate}
-        >
-          Lock Formulation &amp; Prepare Validation
-        </FilledButton>
+      {/* ── Validation ──────────────────────────────────────── */}
+      <div className="card" style={{ marginTop: 16 }}>
+        <h3>Multi-Market Compliance Check</h3>
+        <div className="button-group">
+          <FilledButton
+            size="medium"
+            onClick={runValidation}
+            isLoading={validating}
+            isDisabled={validating || candidate.length === 0}
+          >
+            Run n20s Compliance Check
+          </FilledButton>
+          <OutlinedButton
+            size="medium"
+            onClick={runExport}
+            isLoading={loadingExport}
+            isDisabled={loadingExport || !validated}
+          >
+            Export Turtle for Audit
+          </OutlinedButton>
+        </div>
       </div>
 
-      {/* Current candidate summary */}
-      {candidate.length > 0 && (
-        <div className="card">
-          <h3>Locked Candidate Formulation</h3>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Ingredient</th>
-                <th>Role</th>
-                <th>Concentration</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Water</td>
-                <td>Solvent</td>
-                <td>{waterPct.toFixed(2)}%</td>
-              </tr>
-              {candidate.map((c) => (
-                <tr key={c.name}>
-                  <td>{c.name}</td>
-                  <td>
-                    <span className="chip">{c.category}</span>
-                  </td>
-                  <td>{(c.concentration * 100).toFixed(3)}%</td>
-                </tr>
+      {validating && (
+        <div className="loading-container">
+          <LoadingSpinner size="large" />
+          Running RDFS inference + Jena rules + SHACL validation...
+        </div>
+      )}
+
+      {validated && (
+        <>
+          {/* Compliance matrix */}
+          <div className="card">
+            <h3>
+              Compliance Matrix{" "}
+              {violations.length === 0 ? (
+                <span className="status-pass">ALL CLEAR</span>
+              ) : (
+                <span className="status-fail">
+                  {violations.length} VIOLATION{violations.length > 1 ? "S" : ""}
+                </span>
+              )}
+            </h3>
+
+            <div className="compliance-matrix">
+              <div className="header">Ingredient</div>
+              {MARKETS.map((m) => (
+                <div key={m} className="header">{m}</div>
               ))}
-            </tbody>
-          </table>
+
+              {candidate.map((c) => {
+                const statuses = getMarketStatus(c.name);
+                return [
+                  <div key={`${c.name}-name`} className="ingredient-name">
+                    {c.name}
+                    <span style={{ marginLeft: 8, fontSize: 11, color: "#999", fontFamily: "monospace" }}>
+                      {(c.concentration * 100).toFixed(2)}%
+                    </span>
+                  </div>,
+                  ...MARKETS.map((m) => {
+                    const s = statuses[m];
+                    return (
+                      <div key={`${c.name}-${m}`} className={`cell ${s.status}`}>
+                        {s.status === "pass"
+                          ? "PASS"
+                          : s.status === "fail"
+                          ? `FAIL (${(s.limit! * 100).toFixed(1)}%)`
+                          : "--"}
+                      </div>
+                    );
+                  }),
+                ];
+              })}
+            </div>
+          </div>
+
+          {/* Violations detail */}
+          {violations.length > 0 && (
+            <div className="card">
+              <h3>Concentration Limit Violations (queryWithRules + greaterThan)</h3>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Ingredient</th>
+                    <th>Market</th>
+                    <th>Actual</th>
+                    <th>Limit</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {violations.map((v, i) => (
+                    <tr key={i}>
+                      <td style={{ fontWeight: 600 }}>{v.label}</td>
+                      <td><span className="chip">{v.market}</span></td>
+                      <td style={{ fontFamily: "monospace" }}>{(Number(v.actual) * 100).toFixed(2)}%</td>
+                      <td style={{ fontFamily: "monospace" }}>{(Number(v.limit) * 100).toFixed(2)}%</td>
+                      <td><span className="status-fail">EXCEEDS LIMIT</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* SHACL results */}
+          {shacl.length > 0 && (
+            <div className="card">
+              <h3>SHACL Validation Results</h3>
+              <table className="data-table">
+                <thead>
+                  <tr><th>Focus Node</th><th>Severity</th><th>Message</th></tr>
+                </thead>
+                <tbody>
+                  {shacl.map((s, i) => (
+                    <tr key={i}>
+                      <td style={{ fontFamily: "monospace", fontSize: 12 }}>
+                        {s.focusNode.replace("http://example.org/cosmo#", "cosmo:")}
+                      </td>
+                      <td>
+                        <span className={s.severity === "Violation" ? "status-fail" : "status-warn"}>
+                          {s.severity}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: 13 }}>{s.message}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {violations.length === 0 && shacl.length === 0 && (
+            <Banner variant="success">
+              <strong>Formulation Passed All Checks.</strong> No concentration limit violations. No SHACL constraint violations.
+            </Banner>
+          )}
+        </>
+      )}
+
+      {/* Turtle export */}
+      {turtle && (
+        <div className="card">
+          <h3>
+            Turtle Export (RDFS-inferred)
+            <OutlinedButton
+              size="small"
+              onClick={() => navigator.clipboard.writeText(turtle)}
+            >
+              Copy
+            </OutlinedButton>
+          </h3>
+          <div className="turtle-export">{turtle}</div>
         </div>
       )}
     </div>

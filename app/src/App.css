@@ -152,6 +152,39 @@
   color: #c62828;
 }
 
+/* Incompatibility pairings */
+.incompat-pairings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.incompat-pair {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: white;
+  border: 1px solid #ffcdd2;
+  border-radius: 8px;
+}
+
+.incompat-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  background: #ffebee;
+  color: #c62828;
+}
+
+.incompat-line {
+  flex-shrink: 0;
+}
+
 /* Slider row */
 .slider-row {
   display: flex;

@@ -285,12 +285,27 @@ export default function FormulateTab() {
         </div>
       </div>
 
-      {/* Incompatibility warnings */}
+      {/* Incompatibility pairings */}
       {incompatibilities.length > 0 && (
-        <Banner variant="warning">
-          <strong>Incompatibilities Detected: </strong>
-          {incompatibilities.map((p) => `${p.a} + ${p.b}`).join(" | ")}
-        </Banner>
+        <div className="card" style={{ borderColor: "#ffcdd2", background: "#fff8f8" }}>
+          <h3 style={{ color: "#c62828" }}>
+            Incompatibilities Detected ({incompatibilities.length})
+          </h3>
+          <div className="incompat-pairings">
+            {incompatibilities.map((p, i) => (
+              <div key={i} className="incompat-pair">
+                <span className="incompat-chip">{p.a}</span>
+                <svg className="incompat-line" width="60" height="24" viewBox="0 0 60 24">
+                  <line x1="0" y1="12" x2="60" y2="12" stroke="#c62828" strokeWidth="2" strokeDasharray="4 3" />
+                  <circle cx="6" cy="12" r="4" fill="#c62828" />
+                  <circle cx="54" cy="12" r="4" fill="#c62828" />
+                  <text x="30" y="9" textAnchor="middle" fill="#c62828" fontSize="14" fontWeight="bold">&#x2717;</text>
+                </svg>
+                <span className="incompat-chip">{p.b}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* ── Validation ──────────────────────────────────────── */}

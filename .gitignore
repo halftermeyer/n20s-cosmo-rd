@@ -8,3 +8,7 @@ app/.env
 *.pyc
 package.json
 package-lock.json
+.DS_Store
+assets/
+*.preview.md
+n20s-cosmo-rd-intro.*

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { FilledButton, OutlinedButton, LoadingSpinner, Banner, Select } from "@neo4j-ndl/react";
+import UseCaseExplainer, { FORMULATE_SLIDES } from "./UseCaseExplainer";
 import {
   getCategories,
   getIngredientsByCategory,
@@ -208,7 +209,10 @@ export default function FormulateTab() {
     <div>
       {/* ── Formulation ─────────────────────────────────────── */}
       <div className="card">
-        <h3>Anti-Aging Day Serum — Formulation Template</h3>
+        <h3 style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span>Anti-Aging Day Serum — Formulation Template</span>
+          <UseCaseExplainer slides={FORMULATE_SLIDES} />
+        </h3>
         <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
           Select an ingredient for each functional slot and adjust concentrations.
           Incompatibilities are checked in real time.

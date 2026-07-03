@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { FilledButton, LoadingSpinner, Banner } from "@neo4j-ndl/react";
+import UseCaseExplainer, { EXPLORE_SLIDES } from "./UseCaseExplainer";
 import {
   getIngredients,
   getCommunities,
@@ -105,9 +106,10 @@ export default function ExploreTab() {
       <div className="card-row">
         {/* Ingredient portfolio */}
         <div className="card" style={{ flex: 2 }}>
-          <h3>
-            Ingredient Portfolio ({ingredients.length} ingredients,{" "}
-            {Object.keys(byCategory).length} categories)
+          <h3 style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span>Ingredient Portfolio ({ingredients.length} ingredients,{" "}
+            {Object.keys(byCategory).length} categories)</span>
+            <UseCaseExplainer slides={EXPLORE_SLIDES} />
           </h3>
 
           <div className="button-group" style={{ marginBottom: 12 }}>

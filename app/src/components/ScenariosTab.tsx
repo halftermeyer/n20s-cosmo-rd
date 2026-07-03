@@ -14,6 +14,7 @@ import {
   type AllergenPropagation,
 } from "../lib/scenarioQueries";
 import { getIngredients, type Ingredient } from "../lib/queries";
+import UseCaseExplainer, { SCENARIOS_SLIDES } from "./UseCaseExplainer";
 
 // ─── Scenario 1: Regulatory Change Impact ──────────────────────
 
@@ -555,8 +556,9 @@ export default function ScenariosTab() {
   return (
     <div>
       <div style={{ marginBottom: 24 }}>
-        <h2 style={{ margin: 0, color: "#0b297d" }}>
-          Graph Traversal &rarr; RDF Reasoning Scenarios
+        <h2 style={{ margin: 0, color: "#0b297d", display: "flex", alignItems: "center", gap: 8 }}>
+          <span>Graph Traversal &rarr; RDF Reasoning Scenarios</span>
+          <UseCaseExplainer slides={SCENARIOS_SLIDES} />
         </h2>
         <p style={{ color: "#666", fontSize: 14, marginTop: 4 }}>
           Each scenario demonstrates Cypher deep traversal scoping a triple set for n20s RDF-based reasoning.

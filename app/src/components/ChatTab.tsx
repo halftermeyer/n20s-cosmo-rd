@@ -18,6 +18,7 @@ import {
   runAllergenPropagation,
 } from "../lib/scenarioQueries";
 import { runQuery, getQueryLog } from "../lib/neo4j";
+import UseCaseExplainer, { ASSISTANT_SLIDES } from "./UseCaseExplainer";
 
 interface ChatMessage {
   role: "user" | "assistant" | "tool";
@@ -478,7 +479,10 @@ export default function ChatTab() {
       <div className="chat-messages">
         {messages.length === 0 && (
           <div className="chat-welcome">
-            <h3>Cosmo R&D Assistant</h3>
+            <h3 style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              <span>Cosmo R&D Assistant</span>
+              <UseCaseExplainer slides={ASSISTANT_SLIDES} />
+            </h3>
             <p>Ask me about ingredients, products, formulations, or regulation compliance.</p>
           </div>
         )}

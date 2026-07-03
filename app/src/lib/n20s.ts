@@ -100,7 +100,7 @@ export async function n20sQuery(
 ): Promise<Record<string, unknown>[]> {
   if (mode === "server") {
     const body: Record<string, string> = { sparql };
-    if (profile) body.reasoningProfile = profile;
+    if (profile) body.profile = profile;
     const rows = await serverPost<{ row: Record<string, unknown> }[]>(`/graph/${graphName}/query`, body);
     return rows.map((r) => r.row);
   }
@@ -119,7 +119,7 @@ export async function n20sQueryWithRules(
 ): Promise<Record<string, unknown>[]> {
   if (mode === "server") {
     const body: Record<string, string> = { sparql, rules };
-    if (profile) body.reasoningProfile = profile;
+    if (profile) body.profile = profile;
     const rows = await serverPost<{ row: Record<string, unknown> }[]>(`/graph/${graphName}/queryWithRules`, body);
     return rows.map((r) => r.row);
   }

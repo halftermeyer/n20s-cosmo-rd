@@ -97,14 +97,11 @@ export async function n20sAddTurtle(graphName: string, turtle: string): Promise<
 export async function n20sAddTurtleBulk(graphName: string, turtles: string[]): Promise<number> {
   if (turtles.length === 0) return 0;
   if (mode === "server") {
-    let total = 0;
-    for (const t of turtles) {
-      const result = await serverPost<{ graphName: string; added: number }>(
-        `/graph/${graphName}/turtle`, { turtle: t }
-      );
-      total += result.added;
-    }
-    return total;
+    // Concatenate all turtle strings — safe since each has its own @prefix declarations
+    const result = await serverPost<{ graphName: string; added: number }>(
+      `/graph/${graphName}/turtle`, { turtle: turtles.join("\n") }
+    );
+    return result.added;
   }
   // Plugin: use the aggregating function — single Cypher round trip
   const rows = await runQuery<{ added: number }>(`

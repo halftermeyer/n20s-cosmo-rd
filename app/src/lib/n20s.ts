@@ -97,9 +97,9 @@ export async function n20sAddTurtle(graphName: string, turtle: string): Promise<
 export async function n20sAddTurtleBulk(graphName: string, turtles: string[]): Promise<number> {
   if (turtles.length === 0) return 0;
   if (mode === "server") {
-    // Concatenate all turtle strings — safe since each has its own @prefix declarations
+    // Batch endpoint: send array of turtle strings in one POST
     const result = await serverPost<{ graphName: string; added: number }>(
-      `/graph/${graphName}/turtle`, { turtle: turtles.join("\n") }
+      `/graph/${graphName}/turtle`, { turtles }
     );
     return result.added;
   }

@@ -5,18 +5,25 @@ import FormulateTab from "./components/FormulateTab";
 import ScenariosTab from "./components/ScenariosTab";
 import ChatTab from "./components/ChatTab";
 import QueryAuditDrawer from "./components/QueryAuditDrawer";
+import { getN20sMode } from "./lib/n20s";
 import "./App.css";
 
 function App() {
   const [activeTab, setActiveTab] = useState("explore");
+  const n20sMode = getN20sMode();
 
   return (
     <div className="app-container">
       <header className="app-header">
         <div className="header-content">
-          <h1>
-            <span className="header-icon">&#9883;</span> Cosmo R&D
-          </h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <h1>
+              <span className="header-icon">&#9883;</span> Cosmo R&D
+            </h1>
+            <span className={`n20s-mode-badge ${n20sMode}`}>
+              n20s {n20sMode === "server" ? "server" : "plugin"}
+            </span>
+          </div>
           <p className="subtitle">
             Graph-native formulation screening with Neo4j + GDS + n20s
           </p>

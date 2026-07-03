@@ -46,6 +46,12 @@ export function getQueryLog(): QueryLogEntry[] {
   return _queryLog;
 }
 
+/** Push an external log entry (used by n20s.ts for server-mode HTTP calls) */
+export function pushLogEntry(entry: Omit<QueryLogEntry, "id">): void {
+  _queryLog = [..._queryLog, { ...entry, id: ++_logCounter, group: entry.group || _currentGroup || undefined }];
+  _notifyListeners();
+}
+
 /** Group subsequent queries under a label until endGroup() is called */
 export function beginGroup(label: string): void {
   _currentGroup = label;

@@ -3,48 +3,78 @@
  * - Plugin mode (default): CALL n20s.graph.*() procedures in Cypher
  * - Server mode: direct HTTP calls to n20s-server REST API
  *
- * Set VITE_N20S_MODE=server and VITE_N20S_URL=http://localhost:7475 in .env
- * to use the standalone n20s-server instead of the Neo4j plugin.
- *
- * Server mode calls the n20s-server directly from the browser via fetch.
- * When APOC Extended is available, this could be done via apoc.load.jsonParams
- * from Cypher instead — but direct fetch is simpler and works without extra plugins.
+ * Server-mode HTTP calls are logged to the same audit log as Cypher queries.
  */
 
-import { runQuery } from "./neo4j";
+import { runQuery, pushLogEntry } from "./neo4j";
 
 type N20sMode = "plugin" | "server";
 
 const mode: N20sMode = (import.meta.env.VITE_N20S_MODE as N20sMode) || "plugin";
-// In dev, requests go through the Vite proxy (/n20s/* → n20s-server) to avoid CORS.
-// In production, set VITE_N20S_URL to the actual server URL.
 const serverUrl: string = import.meta.env.PROD
   ? (import.meta.env.VITE_N20S_URL || "http://localhost:7475")
   : "/n20s";
 
-// ── Server HTTP helpers ────────────────────────────────────────
+// ── Server HTTP helpers (with audit logging) ───────────────────
 
 async function serverPost<T>(path: string, body: Record<string, unknown> = {}): Promise<T> {
+  const start = performance.now();
   const res = await fetch(`${serverUrl}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`n20s-server ${path}: ${res.status} ${await res.text()}`);
-  return res.json();
+  const ms = Math.round(performance.now() - start);
+  if (!res.ok) {
+    const errText = await res.text();
+    logCall("POST", path, body, ms, 0, undefined, `${res.status} ${errText}`);
+    throw new Error(`n20s-server ${path}: ${res.status} ${errText}`);
+  }
+  const data = await res.json() as T;
+  const count = Array.isArray(data) ? data.length : 1;
+  logCall("POST", path, body, ms, count, data);
+  return data;
 }
 
 async function serverGet<T>(path: string): Promise<T> {
+  const start = performance.now();
   const res = await fetch(`${serverUrl}${path}`);
-  if (!res.ok) throw new Error(`n20s-server ${path}: ${res.status} ${await res.text()}`);
-  return res.json();
+  const ms = Math.round(performance.now() - start);
+  if (!res.ok) {
+    const errText = await res.text();
+    logCall("GET", path, {}, ms, 0, undefined, `${res.status} ${errText}`);
+    throw new Error(`n20s-server ${path}: ${res.status} ${errText}`);
+  }
+  const data = await res.json() as T;
+  logCall("GET", path, {}, ms, 1, data);
+  return data;
 }
 
 async function serverDelete(path: string): Promise<void> {
+  const start = performance.now();
   const res = await fetch(`${serverUrl}${path}`, { method: "DELETE" });
+  const ms = Math.round(performance.now() - start);
   if (!res.ok && res.status !== 404) {
-    throw new Error(`n20s-server ${path}: ${res.status} ${await res.text()}`);
+    logCall("DELETE", path, {}, ms, 0, undefined, `${res.status}`);
+    throw new Error(`n20s-server ${path}: ${res.status}`);
   }
+  logCall("DELETE", path, {}, ms, 1, { status: res.status === 404 ? "not found" : "dropped" });
+}
+
+function logCall(
+  method: string, path: string, body: Record<string, unknown>,
+  durationMs: number, rowCount: number, result?: unknown, error?: string,
+) {
+  const resultArr = Array.isArray(result) ? result.slice(0, 20) : result ? [result] : [];
+  pushLogEntry({
+    timestamp: new Date(),
+    cypher: `// n20s-server: ${method} ${path}`,
+    params: Object.keys(body).length > 0 ? body : {},
+    durationMs,
+    rowCount,
+    results: resultArr as unknown[],
+    error,
+  });
 }
 
 // ── Public API ─────────────────────────────────────────────────
@@ -118,10 +148,16 @@ export async function n20sValidate(
   graphName: string
 ): Promise<{ focusNode: string | null; severity: string; message: string }[]> {
   if (mode === "server") {
-    // Server validate endpoint takes no body
     const res = await fetch(`${serverUrl}/graph/${graphName}/validate`, { method: "POST" });
-    if (!res.ok) throw new Error(`n20s-server validate: ${res.status} ${await res.text()}`);
-    return res.json();
+    const ms = 0; // timing handled by caller via withGroup
+    if (!res.ok) {
+      const errText = await res.text();
+      logCall("POST", `/graph/${graphName}/validate`, {}, ms, 0, undefined, `${res.status} ${errText}`);
+      throw new Error(`n20s-server validate: ${res.status} ${errText}`);
+    }
+    const data = await res.json();
+    logCall("POST", `/graph/${graphName}/validate`, {}, ms, Array.isArray(data) ? data.length : 1, data);
+    return data;
   }
   return runQuery<{ focusNode: string | null; severity: string; message: string }>(`
     CALL n20s.graph.validate($g)

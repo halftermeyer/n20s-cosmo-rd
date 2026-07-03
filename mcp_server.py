@@ -19,6 +19,7 @@ import json
 import textwrap
 from pathlib import Path
 from threading import local
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
@@ -97,6 +98,14 @@ def _build_response(results, label: str = "results") -> str:
     return json.dumps(response, indent=2, default=str)
 
 
+# ─── URI minting — single source of truth ─────────────────────
+
+def safe_name(name: str) -> str:
+    """Strip non-alphanumerics to build a cosmo: URI local name.
+    Must match generate_data.py's logic and app/src/lib/* regex."""
+    return "".join(c for c in name if c.isalnum())
+
+
 # ─── Tools ────────────────────────────────────────────────────
 
 
@@ -109,22 +118,33 @@ def load_demo() -> str:
     cypher_file = Path(__file__).parent / "data" / "load_data.cypher"
     content = cypher_file.read_text()
 
-    # Run the full load file
-    _get_trail().append("// [Full load from data/load_data.cypher — 153 ingredients, 36 products, ontology, SHACL]")
+    # Split on ";\n" — bare ";" would shred Turtle cargo which uses ";" as predicate separator
+    _get_trail().append("// [Loading data/load_data.cypher — split on ';\\n' to preserve Turtle strings]")
+    statements = [s.strip() for s in content.split(";\n") if s.strip() and not s.strip().startswith("//")]
+    run_count = 0
+    fail_count = 0
+    errors = []
     with driver.session() as session:
-        for statement in content.split(";"):
-            stmt = statement.strip()
-            if stmt and not stmt.startswith("//"):
-                try:
-                    session.run(stmt)
-                except Exception:
-                    pass
+        for stmt in statements:
+            try:
+                session.run(stmt)
+                run_count += 1
+            except Exception as e:
+                fail_count += 1
+                errors.append(str(e)[:200])
 
     counts = run_cypher(
         "MATCH (n) RETURN labels(n)[0] AS label, count(*) AS count ORDER BY label"
     )
     summary = ", ".join(f"{r['count']} {r['label']}" for r in counts)
-    return _build_response(f"Demo loaded: {summary}", "status")
+    result = {
+        "status": f"Demo loaded: {summary}",
+        "statements_run": run_count,
+        "statements_failed": fail_count,
+    }
+    if errors:
+        result["errors"] = errors[:5]
+    return _build_response(result, "load_result")
 
 
 @mcp.tool()
@@ -165,7 +185,7 @@ def inspect_ingredient(ingredient_name: str) -> str:
     """Inspect an ingredient: INCI name, CAS, cost, category,
     RDF classification (via RDFS inference), and regulation limits."""
     _reset_trail()
-    graph_name = "inspect_tmp"
+    graph_name = f"inspect_{uuid4().hex[:8]}"
 
     info = run_cypher("""
         MATCH (i:Ingredient {name: $name})-[:BELONGS_TO]->(c:Category)
@@ -180,7 +200,7 @@ def inspect_ingredient(ingredient_name: str) -> str:
 
     # RDF classification via n20s
     try:
-        safe_name = "".join(c for c in ingredient_name if c.isalnum())
+        sn = safe_name(ingredient_name)
         run_cypher("""
             MATCH (i:Ingredient {name: $name})
             CALL n20s.graph.addTurtle($graph, i.turtle)
@@ -200,7 +220,7 @@ def inspect_ingredient(ingredient_name: str) -> str:
               PREFIX cosmo: <http://example.org/cosmo#>
               PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
               SELECT ?className WHERE {{
-                cosmo:{safe_name} rdf:type ?className .
+                cosmo:{sn} rdf:type ?className .
                 FILTER(STRSTARTS(STR(?className), "http://example.org/cosmo#"))
               }}
             ', 'RDFS') YIELD row
@@ -280,13 +300,7 @@ def validate_formulation(
     Input: list of {name: str, concentration: float} (concentration as fraction, e.g. 0.05 = 5%).
     Uses n20s: RDFS inference + Jena rules with greaterThan builtins + SHACL validation."""
     _reset_trail()
-    graph_name = "validation"
-
-    try:
-        run_cypher("CALL n20s.graph.drop($graph) YIELD graphName RETURN graphName",
-                   {"graph": graph_name})
-    except Exception:
-        pass
+    graph_name = f"validation_{uuid4().hex[:8]}"
 
     names = [i["name"] for i in ingredients_with_concentrations]
 
@@ -303,9 +317,9 @@ def validate_formulation(
     # Build concentration turtle
     conc_lines = []
     for i in ingredients_with_concentrations:
-        safe_name = "".join(c for c in i["name"] if c.isalnum())
+        sn = safe_name(i["name"])
         conc_lines.append(
-            f'cosmo:{safe_name} cosmo:actualConcentration "{i["concentration"]}"^^xsd:double .'
+            f'cosmo:{sn} cosmo:actualConcentration "{i["concentration"]}"^^xsd:double .'
         )
     conc_turtle = (
         "@prefix cosmo: <http://example.org/cosmo#> .\n"
@@ -414,7 +428,7 @@ def export_turtle(ingredient_names: list[str]) -> str:
     """Export ingredient RDF data as Turtle after RDFS forward-chaining.
     Useful for regulatory audit trails."""
     _reset_trail()
-    graph_name = "export"
+    graph_name = f"export_{uuid4().hex[:8]}"
 
     try:
         run_cypher("CALL n20s.graph.drop($graph) YIELD graphName RETURN graphName",
@@ -478,7 +492,7 @@ def classify_ingredients_rdf(category: str) -> str:
     """Classify all ingredients in a category using RDFS inference.
     Shows the full RDF class hierarchy for each ingredient."""
     _reset_trail()
-    graph_name = "classify_tmp"
+    graph_name = f"classify_{uuid4().hex[:8]}"
 
     try:
         run_cypher("CALL n20s.graph.drop($graph) YIELD graphName RETURN graphName",
@@ -532,30 +546,70 @@ def classify_ingredients_rdf(category: str) -> str:
 @mcp.tool()
 def regulatory_change_impact(market: str, ingredient_class: str, new_limit: float) -> str:
     """Simulate a regulatory change: what if a market lowers the concentration limit
-    for an ingredient class? Traverses Market ← Product → BOM → Ingredient, computes
-    concentrations via BOM ratio multiplication, and flags newly non-compliant products.
+    for an ingredient class? Uses RDFS to expand the class (e.g., RetinoidAgent catches
+    all subclasses), then BOM traversal for concentrations.
     Example: market='EU', ingredient_class='RetinoidAgent', new_limit=0.001 (= 0.1%)"""
     _reset_trail()
+    graph_name = f"reg_impact_{uuid4().hex[:8]}"
 
-    results = run_cypher("""
-        MATCH (m:Market {name: $market})<-[:SOLD_IN]-(p:Product)
-        MATCH path = (p)-[:CONTAINS*]->(i:Ingredient)
-        WHERE (i)-[:BELONGS_TO]->(:Category {name: $category})
-        WITH p, i,
-             reduce(conc = 1.0, r IN relationships(path) | conc * r.ratio) AS actualConc
-        WHERE actualConc > $newLimit
-        RETURN p.name AS product, p.sku AS sku, i.name AS ingredient,
-               round(actualConc * 100, 4) AS actualPct,
-               round($newLimit * 100, 1) AS newLimitPct
-        ORDER BY actualConc DESC
-    """, {"market": market, "category": ingredient_class, "newLimit": new_limit})
+    try:
+        # Step 1: RDFS — find all ingredients that are members of the class (including subclasses)
+        run_cypher("""
+            MATCH (i:Ingredient) WHERE i.turtle IS NOT NULL
+            WITH collect(i.turtle) AS turtles
+            UNWIND turtles AS t
+            CALL n20s.graph.addTurtle($g, t) YIELD added
+            RETURN sum(added) AS total
+        """, {"g": graph_name})
 
-    return _build_response({
-        "newlyNonCompliant": results,
-        "newLimit": f"{new_limit * 100:.1f}%",
-        "market": market,
-        "ingredientClass": ingredient_class,
-    }, "regulatory_impact")
+        run_cypher("""
+            MATCH (ont:Ontology {name: 'cosmo'})
+            CALL n20s.graph.addTurtle($g, ont.turtle) YIELD added
+            RETURN added
+        """, {"g": graph_name})
+
+        class_members = run_cypher(f"""
+            CALL n20s.graph.query($g, '
+              PREFIX cosmo: <http://example.org/cosmo#>
+              PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+              PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+              SELECT ?label WHERE {{
+                ?ing rdf:type cosmo:{ingredient_class} .
+                ?ing rdfs:label ?label .
+              }}
+            ', 'RDFS') YIELD row
+            RETURN row.label AS name
+        """, {"g": graph_name})
+
+        ingredient_names = [r["name"] for r in class_members]
+
+        # Step 2: BOM traversal — find products sold in this market containing those ingredients
+        results = run_cypher("""
+            MATCH (m:Market {name: $market})<-[:SOLD_IN]-(p:Product)
+            MATCH path = (p)-[:CONTAINS*]->(i:Ingredient)
+            WHERE i.name IN $ingredients
+            WITH p, i,
+                 reduce(conc = 1.0, r IN relationships(path) | conc * r.ratio) AS actualConc
+            WHERE actualConc > $newLimit
+            RETURN p.name AS product, p.sku AS sku, i.name AS ingredient,
+                   round(actualConc * 100, 4) AS actualPct,
+                   round($newLimit * 100, 1) AS newLimitPct
+            ORDER BY actualConc DESC
+        """, {"market": market, "ingredients": ingredient_names, "newLimit": new_limit})
+
+        return _build_response({
+            "ingredientsInClass": ingredient_names,
+            "newlyNonCompliant": results,
+            "newLimit": f"{new_limit * 100:.1f}%",
+            "market": market,
+            "ingredientClass": ingredient_class,
+        }, "regulatory_impact")
+    finally:
+        try:
+            run_cypher("CALL n20s.graph.drop($g) YIELD graphName RETURN graphName",
+                       {"g": graph_name})
+        except Exception:
+            pass
 
 
 @mcp.tool()
@@ -565,7 +619,7 @@ def photosensitive_scan(threshold: float = 0.001) -> str:
     membership (e.g., Retinol is inferred as PhotosensitiveAgent via the
     ontology, not via an explicit label)."""
     _reset_trail()
-    graph_name = "photo_scan"
+    graph_name = f"photo_{uuid4().hex[:8]}"
 
     try:
         run_cypher("CALL n20s.graph.drop($g) YIELD graphName RETURN graphName",
@@ -672,7 +726,7 @@ def allergen_reclassification(ingredient_name: str) -> str:
     RDF type via addTurtle, finds all affected products via BOM traversal,
     and runs SHACL validation (allergens must declare maxConcentrationEU)."""
     _reset_trail()
-    graph_name = "allergen_sim"
+    graph_name = f"allergen_{uuid4().hex[:8]}"
 
     try:
         run_cypher("CALL n20s.graph.drop($g) YIELD graphName RETURN graphName",
@@ -693,7 +747,7 @@ def allergen_reclassification(ingredient_name: str) -> str:
     """, {"name": ingredient_name})
 
     # n20s: load turtle + inject Allergen type + SHACL
-    safe_name = "".join(c for c in ingredient_name if c.isalnum())
+    sn = safe_name(ingredient_name)
 
     run_cypher("""
         MATCH (i:Ingredient {name: $name})
@@ -705,7 +759,7 @@ def allergen_reclassification(ingredient_name: str) -> str:
         CALL n20s.graph.addTurtle($g, $turtle)
         YIELD added RETURN added
     """, {"g": graph_name,
-          "turtle": f"@prefix cosmo: <http://example.org/cosmo#> .\ncosmo:{safe_name} a cosmo:Allergen ."})
+          "turtle": f"@prefix cosmo: <http://example.org/cosmo#> .\ncosmo:{sn} a cosmo:Allergen ."})
 
     allergen_shacl = (
         "@prefix sh: <http://www.w3.org/ns/shacl#> .\n"

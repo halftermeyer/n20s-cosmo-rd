@@ -1,8 +1,9 @@
 import { runQuery, withGroup } from "./neo4j";
 import {
   n20sAddTurtle, n20sAddTurtleBulk, n20sQuery, n20sQueryWithRules,
-  n20sValidate, n20sDropSafe,
+  n20sValidate, n20sDropSafe, uniqueGraphName,
 } from "./n20s";
+import { safeName } from "./queries";
 
 // Helper: fetch turtle properties from Neo4j
 async function fetchTurtles(cypher: string, params: Record<string, unknown> = {}): Promise<string[]> {
@@ -126,7 +127,7 @@ export async function runRegulatoryChangeN20s(
   market: string,
   newLimitFraction: number
 ): Promise<{ ingredient: string; actual: number; limit: number; inferredClass: string }[]> {
-  const g = "reg_impact";
+  const g = uniqueGraphName("reg_impact");
   await n20sDropSafe(g);
 
   const [ingTurtles, ontTurtles] = await Promise.all([
@@ -179,7 +180,7 @@ export async function runPhotosensitiveCheck(
   thresholdFraction: number
 ): Promise<PhotosensitiveHit[]> {
   return withGroup(`Photosensitive Agent Scan (>${(thresholdFraction*100).toFixed(2)}%)`, async () => {
-  const graphName = "photosensitive";
+  const graphName = uniqueGraphName("photo");
   await n20sDropSafe(graphName);
 
   // Step 1: Cypher traversal — non-sunscreen products → BOM → ingredients
@@ -329,7 +330,7 @@ export async function validateSubstitution(
   substituteIngredient: string
 ): Promise<SubstitutionValidation> {
   return withGroup(`Validate Swap: ${originalIngredient} → ${substituteIngredient}`, async () => {
-  const g = "sub_validation";
+  const g = uniqueGraphName("sub_val");
   await n20sDropSafe(g);
 
   // Get BOM with the substitution applied
@@ -348,8 +349,8 @@ export async function validateSubstitution(
   // Load turtles + concentrations + ontology into n20s (single aggregation)
   const uniqueTurtles = [...new Set(bom.map((r) => r.turtle))];
   const concLines = bom.map((r) => {
-    const safeName = r.ingredient.replace(/[^a-zA-Z0-9]/g, "");
-    return `cosmo:${safeName} cosmo:actualConcentration "${r.conc}"^^xsd:double .`;
+    const sn = safeName(r.ingredient);
+    return `cosmo:${sn} cosmo:actualConcentration "${r.conc}"^^xsd:double .`;
   }).join("\n");
   const concTurtle = `@prefix cosmo: <http://example.org/cosmo#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${concLines}`;
   const ontTurtles = await fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`);
@@ -415,7 +416,7 @@ export async function runAllergenPropagation(
   ingredientName: string
 ): Promise<AllergenPropagation> {
   return withGroup(`Allergen Reclassification: ${ingredientName}`, async () => {
-  const g = "allergen_prop";
+  const g = uniqueGraphName("allergen");
   await n20sDropSafe(g);
 
   // Step 1: Cypher traversal — find all products containing this ingredient
@@ -435,12 +436,12 @@ export async function runAllergenPropagation(
   `, { name: ingredientName });
 
   // Step 2: Load ingredient turtle + inject Allergen reclassification
-  const safeName = ingredientName.replace(/[^a-zA-Z0-9]/g, "");
+  const sn = safeName(ingredientName);
   const ingTurtles = await fetchTurtles(
     `MATCH (i:Ingredient {name: $name}) RETURN i.turtle AS turtle`,
     { name: ingredientName }
   );
-  const allergenTriple = `@prefix cosmo: <http://example.org/cosmo#> .\ncosmo:${safeName} a cosmo:Allergen .`;
+  const allergenTriple = `@prefix cosmo: <http://example.org/cosmo#> .\ncosmo:${sn} a cosmo:Allergen .`;
   await n20sAddTurtleBulk(g, [...ingTurtles, allergenTriple]);
 
   // Step 3: Get classification (no RDFS needed — types are explicit)
@@ -448,7 +449,7 @@ export async function runAllergenPropagation(
     PREFIX cosmo: <http://example.org/cosmo#>
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     SELECT ?className WHERE {
-      cosmo:${safeName} rdf:type ?class .
+      cosmo:${sn} rdf:type ?class .
       FILTER(STRSTARTS(STR(?class), "http://example.org/cosmo#"))
       BIND(REPLACE(STR(?class), "http://example.org/cosmo#", "") AS ?className)
     }

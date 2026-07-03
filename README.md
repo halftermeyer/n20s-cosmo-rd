@@ -98,6 +98,16 @@ app/                      — React app (Vite + TypeScript + @neo4j-ndl/react)
 
 Each ingredient's `turtle` property carries RDF classification and regulation limits as typed `xsd:double` values.
 
+## Security Warning
+
+The React app embeds `VITE_NEO4J_PASSWORD` and `VITE_GEMINI_API_KEY` into the client bundle via Vite env vars. **This is for local development and demos only.** For any shared or production deployment, put a backend service in front of both Neo4j and the LLM API.
+
+## Building with n20s
+
+For general n20s best practices (data modelling, reasoning patterns, deployment), see the plugin repo's [BEST_PRACTICES.md](https://github.com/halftermeyer/neo4j-n20s/blob/main/BEST_PRACTICES.md).
+
+For patterns specific to this demo (cosmetics domain, scenario implementation), see [BUILDING_WITH_N20S.md](./BUILDING_WITH_N20S.md).
+
 ## License
 
 Apache 2.0

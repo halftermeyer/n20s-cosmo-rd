@@ -1,8 +1,13 @@
 import { runQuery, withGroup } from "./neo4j";
 import {
   n20sAddTurtle, n20sAddTurtleBulk, n20sQuery, n20sQueryWithRules,
-  n20sInfer, n20sValidate, n20sToTurtle, n20sDropSafe,
+  n20sInfer, n20sValidate, n20sToTurtle, n20sDropSafe, uniqueGraphName,
 } from "./n20s";
+
+/** URI minting — single source of truth. Must match generate_data.py and mcp_server.py. */
+export function safeName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9]/g, "");
+}
 
 // Helper: fetch a turtle property from Neo4j by Cypher
 async function fetchTurtles(cypher: string, params: Record<string, unknown> = {}): Promise<string[]> {
@@ -248,8 +253,8 @@ export async function getIncompatibilities(): Promise<IncompatibilityPair[]> {
 
 export async function getRDFClassification(ingredientName: string): Promise<string[]> {
   return withGroup(`RDFS Classification: ${ingredientName}`, async () => {
-    const g = "explore_tmp";
-    const safeName = ingredientName.replace(/[^a-zA-Z0-9]/g, "");
+    const g = uniqueGraphName("explore");
+    const sn = safeName(ingredientName);
     await n20sDropSafe(g);
 
     // Fetch turtles from Neo4j, then load into n20s
@@ -264,7 +269,7 @@ export async function getRDFClassification(ingredientName: string): Promise<stri
       PREFIX cosmo: <http://example.org/cosmo#>
       PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
       SELECT ?className WHERE {
-        cosmo:${safeName} rdf:type ?className .
+        cosmo:${sn} rdf:type ?className .
         FILTER(STRSTARTS(STR(?className), "http://example.org/cosmo#"))
       }
     `, "RDFS");
@@ -311,7 +316,7 @@ export async function validateCandidate(
   ingredients: { name: string; concentration: number }[]
 ): Promise<{ violations: Violation[]; shacl: SHACLResult[] }> {
   return withGroup("n20s Compliance Check", async () => {
-    const g = "validation";
+    const g = uniqueGraphName("validation");
     await n20sDropSafe(g);
 
     // Fetch turtles from Neo4j
@@ -324,8 +329,8 @@ export async function validateCandidate(
 
     // Load all turtles + concentration triples in one aggregation
     const concLines = ingredients.map((i) => {
-      const safeName = i.name.replace(/[^a-zA-Z0-9]/g, "");
-      return `cosmo:${safeName} cosmo:actualConcentration "${i.concentration}"^^xsd:double .`;
+      const sn = safeName(i.name);
+      return `cosmo:${sn} cosmo:actualConcentration "${i.concentration}"^^xsd:double .`;
     }).join("\n");
     const concTurtle = `@prefix cosmo: <http://example.org/cosmo#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${concLines}`;
 
@@ -358,7 +363,7 @@ export async function exportTurtle(
   ingredients: { name: string; concentration: number }[]
 ): Promise<string> {
   return withGroup("Turtle Export for Audit", async () => {
-    const g = "export";
+    const g = uniqueGraphName("export");
     await n20sDropSafe(g);
 
     const names = ingredients.map((i) => i.name);

@@ -1,6 +1,12 @@
-# Building Neo4j Apps with n20s — Best Practices for Agents
+# Building Neo4j Apps with n20s — Demo-Specific Patterns
 
-A practical guide for LLM agents building applications that combine Neo4j property graphs with n20s in-memory RDF reasoning.
+Patterns and lessons specific to this cosmetics R&D demo. For general n20s best practices (graph lifecycle, data modelling, datatypes, rules, SHACL, agent integration, deployment), see the canonical guide in the plugin repo:
+
+**[n20s BEST_PRACTICES.md](https://github.com/halftermeyer/neo4j-n20s/blob/main/BEST_PRACTICES.md)**
+
+This document covers demo-specific implementation details and supplements the canonical guide with concrete code from this project.
+
+---
 
 ## Core Principle: Scope First, Reason Second
 

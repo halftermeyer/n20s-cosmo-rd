@@ -167,8 +167,9 @@ export async function n20sValidate(
   graphName: string
 ): Promise<{ focusNode: string | null; severity: string; message: string }[]> {
   if (mode === "server") {
+    const start = performance.now();
     const res = await fetch(`${serverUrl}/graph/${graphName}/validate`, { method: "POST" });
-    const ms = 0; // timing handled by caller via withGroup
+    const ms = Math.round(performance.now() - start);
     if (!res.ok) {
       const errText = await res.text();
       logCall("POST", `/graph/${graphName}/validate`, {}, ms, 0, undefined, `${res.status} ${errText}`);
@@ -212,3 +213,8 @@ export async function n20sDropSafe(graphName: string): Promise<void> {
 
 export function getN20sMode(): N20sMode { return mode; }
 export function getN20sServerUrl(): string { return serverUrl; }
+
+/** Generate a unique graph name to avoid concurrent conflicts */
+export function uniqueGraphName(prefix: string): string {
+  return `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
+}

@@ -16,6 +16,33 @@ import {
 import { getIngredients, type Ingredient } from "../lib/queries";
 import UseCaseExplainer, { SCENARIOS_SLIDES } from "./UseCaseExplainer";
 
+// ─── Maximizable scenario wrapper ─────────────────────────────
+
+function ScenarioCard({ children }: { children: React.ReactNode }) {
+  const [maximized, setMaximized] = useState(false);
+
+  return (
+    <>
+      {maximized && (
+        <div
+          className="scenario-backdrop"
+          onClick={() => setMaximized(false)}
+        />
+      )}
+      <div className={`scenario-card ${maximized ? "maximized" : ""}`}>
+        <button
+          className="scenario-maximize-btn"
+          onClick={() => setMaximized(!maximized)}
+          title={maximized ? "Restore" : "Maximize"}
+        >
+          {maximized ? "\u2716" : "\u26F6"}
+        </button>
+        {children}
+      </div>
+    </>
+  );
+}
+
 // ─── Scenario 1: Regulatory Change Impact ──────────────────────
 
 function RegulatoryChangeScenario() {
@@ -34,7 +61,7 @@ function RegulatoryChangeScenario() {
   const safe = results?.filter((r) => r.status === "safe") || [];
 
   return (
-    <div className="scenario-card">
+    <ScenarioCard>
       <div className="scenario-header">
         <div className="scenario-number">1</div>
         <div>
@@ -118,7 +145,7 @@ function RegulatoryChangeScenario() {
           )}
         </div>
       )}
-    </div>
+    </ScenarioCard>
   );
 }
 
@@ -144,7 +171,7 @@ function PhotosensitiveScenario() {
   });
 
   return (
-    <div className="scenario-card">
+    <ScenarioCard>
       <div className="scenario-header">
         <div className="scenario-number">2</div>
         <div>
@@ -213,7 +240,7 @@ function PhotosensitiveScenario() {
           )}
         </div>
       )}
-    </div>
+    </ScenarioCard>
   );
 }
 
@@ -263,7 +290,7 @@ function SupplierDisruptionScenario() {
   ).size;
 
   return (
-    <div className="scenario-card">
+    <ScenarioCard>
       <div className="scenario-header">
         <div className="scenario-number">3</div>
         <div>
@@ -421,7 +448,7 @@ function SupplierDisruptionScenario() {
           )}
         </div>
       )}
-    </div>
+    </ScenarioCard>
   );
 }
 
@@ -452,7 +479,7 @@ function AllergenPropagationScenario() {
   }, [selected]);
 
   return (
-    <div className="scenario-card">
+    <ScenarioCard>
       <div className="scenario-header">
         <div className="scenario-number">4</div>
         <div>
@@ -546,7 +573,7 @@ function AllergenPropagationScenario() {
           )}
         </div>
       )}
-    </div>
+    </ScenarioCard>
   );
 }
 

@@ -852,10 +852,104 @@
   padding: 24px;
   margin-bottom: 24px;
   transition: box-shadow 0.2s;
+  position: relative;
 }
 
 .scenario-card:hover {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.scenario-card.maximized {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 900;
+  margin: 0;
+  overflow-y: auto;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.3);
+}
+
+.scenario-card.maximized ~ * {
+  display: none;
+}
+
+.scenario-maximize-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid #d0d8e8;
+  background: white;
+  color: #666;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  z-index: 1;
+}
+
+.scenario-maximize-btn:hover {
+  background: #f0f4ff;
+  border-color: #006fd6;
+  color: #006fd6;
+}
+
+.scenario-card.maximized .scenario-maximize-btn {
+  position: sticky;
+  top: 0;
+  float: right;
+  background: white;
+  border-color: #c62828;
+  color: #c62828;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.scenario-card.maximized .scenario-maximize-btn:hover {
+  background: #ffebee;
+}
+
+.scenario-card.maximized .scenario-header h3 {
+  font-size: 24px;
+}
+
+.scenario-card.maximized .scenario-desc {
+  font-size: 15px;
+  line-height: 1.7;
+  max-width: 900px;
+}
+
+.scenario-card.maximized .scenario-number {
+  width: 44px;
+  height: 44px;
+  font-size: 20px;
+}
+
+.scenario-card.maximized .scenario-controls {
+  font-size: 16px;
+}
+
+.scenario-card.maximized .scenario-summary {
+  max-width: 700px;
+}
+
+.scenario-card.maximized .stat-number {
+  font-size: 48px;
+}
+
+.scenario-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 899;
 }
 
 .scenario-header {

@@ -93,6 +93,28 @@ export async function n20sAddTurtle(graphName: string, turtle: string): Promise<
   return rows[0]?.added || 0;
 }
 
+/** Load multiple turtles in one shot using the aggregating function (v1.1.0+) */
+export async function n20sAddTurtleBulk(graphName: string, turtles: string[]): Promise<number> {
+  if (turtles.length === 0) return 0;
+  if (mode === "server") {
+    let total = 0;
+    for (const t of turtles) {
+      const result = await serverPost<{ graphName: string; added: number }>(
+        `/graph/${graphName}/turtle`, { turtle: t }
+      );
+      total += result.added;
+    }
+    return total;
+  }
+  // Plugin: use the aggregating function — single Cypher round trip
+  const rows = await runQuery<{ added: number }>(`
+    UNWIND $turtles AS t
+    WITH n20s.graph.addTurtle($g, t) AS g
+    RETURN g.added AS added
+  `, { g: graphName, turtles });
+  return rows[0]?.added || 0;
+}
+
 export async function n20sQuery(
   graphName: string,
   sparql: string,

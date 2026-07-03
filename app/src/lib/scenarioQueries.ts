@@ -1,6 +1,6 @@
 import { runQuery, withGroup } from "./neo4j";
 import {
-  n20sAddTurtle, n20sQuery, n20sQueryWithRules,
+  n20sAddTurtle, n20sAddTurtleBulk, n20sQuery, n20sQueryWithRules,
   n20sValidate, n20sDropSafe,
 } from "./n20s";
 
@@ -133,7 +133,7 @@ export async function runRegulatoryChangeN20s(
     fetchTurtles(`MATCH (i:Ingredient) WHERE i.turtle IS NOT NULL RETURN i.turtle AS turtle`),
     fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`),
   ]);
-  for (const t of [...ingTurtles, ...ontTurtles]) await n20sAddTurtle(g, t);
+  await n20sAddTurtleBulk(g, [...ingTurtles, ...ontTurtles]);
 
   const marketProp = `maxConcentration${market}`;
   const rows = await n20sQuery(g, `
@@ -204,10 +204,8 @@ export async function runPhotosensitiveCheck(
 
   // Step 2: Load unique ingredient turtles + ontology into n20s
   const uniqueTurtles = [...new Set(bomData.map((r) => r.turtle))];
-  for (const t of uniqueTurtles) await n20sAddTurtle(graphName, t);
-
   const ontTurtles = await fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`);
-  for (const t of ontTurtles) await n20sAddTurtle(graphName, t);
+  await n20sAddTurtleBulk(graphName, [...uniqueTurtles, ...ontTurtles]);
 
   // Step 3: RDFS query — which ingredients are PhotosensitiveAgent?
   const photoAgents = await n20sQuery(graphName, `
@@ -347,20 +345,15 @@ export async function validateSubstitution(
     RETURN ingredient, conc, turtle
   `, { sku: productSku, original: originalIngredient, substitute: substituteIngredient });
 
-  // Load turtles + concentrations + ontology into n20s
+  // Load turtles + concentrations + ontology into n20s (single aggregation)
   const uniqueTurtles = [...new Set(bom.map((r) => r.turtle))];
-  for (const t of uniqueTurtles) await n20sAddTurtle(g, t);
-
   const concLines = bom.map((r) => {
     const safeName = r.ingredient.replace(/[^a-zA-Z0-9]/g, "");
     return `cosmo:${safeName} cosmo:actualConcentration "${r.conc}"^^xsd:double .`;
   }).join("\n");
-  await n20sAddTurtle(g,
-    `@prefix cosmo: <http://example.org/cosmo#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${concLines}`
-  );
-
+  const concTurtle = `@prefix cosmo: <http://example.org/cosmo#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${concLines}`;
   const ontTurtles = await fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`);
-  for (const t of ontTurtles) await n20sAddTurtle(g, t);
+  await n20sAddTurtleBulk(g, [...uniqueTurtles, concTurtle, ...ontTurtles]);
 
   // Run multi-market rules with RDFS
   const ruleRows = await n20sQueryWithRules(g, MARKET_SPARQL, MARKET_RULES, "RDFS");
@@ -447,10 +440,8 @@ export async function runAllergenPropagation(
     `MATCH (i:Ingredient {name: $name}) RETURN i.turtle AS turtle`,
     { name: ingredientName }
   );
-  for (const t of ingTurtles) await n20sAddTurtle(g, t);
-  await n20sAddTurtle(g,
-    `@prefix cosmo: <http://example.org/cosmo#> .\ncosmo:${safeName} a cosmo:Allergen .`
-  );
+  const allergenTriple = `@prefix cosmo: <http://example.org/cosmo#> .\ncosmo:${safeName} a cosmo:Allergen .`;
+  await n20sAddTurtleBulk(g, [...ingTurtles, allergenTriple]);
 
   // Step 3: Get classification (no RDFS needed — types are explicit)
   const classRows = await n20sQuery(g, `

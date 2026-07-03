@@ -1,6 +1,6 @@
 import { runQuery, withGroup } from "./neo4j";
 import {
-  n20sAddTurtle, n20sQuery, n20sQueryWithRules,
+  n20sAddTurtle, n20sAddTurtleBulk, n20sQuery, n20sQueryWithRules,
   n20sInfer, n20sValidate, n20sToTurtle, n20sDropSafe,
 } from "./n20s";
 
@@ -257,7 +257,7 @@ export async function getRDFClassification(ingredientName: string): Promise<stri
       fetchTurtles(`MATCH (i:Ingredient {name: $name}) RETURN i.turtle AS turtle`, { name: ingredientName }),
       fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`),
     ]);
-    for (const t of [...ingTurtles, ...ontTurtles]) await n20sAddTurtle(g, t);
+    await n20sAddTurtleBulk(g, [...ingTurtles, ...ontTurtles]);
 
     // RDFS query
     const rows = await n20sQuery(g, `
@@ -322,19 +322,14 @@ export async function validateCandidate(
       fetchTurtles(`MATCH (s:SHACLRules {name: 'cosmo_validation'}) RETURN s.turtle AS turtle`),
     ]);
 
-    // Load into n20s
-    for (const t of [...ingTurtles, ...ontTurtles, ...shaclTurtles]) {
-      await n20sAddTurtle(g, t);
-    }
-
-    // Add concentration triples
+    // Load all turtles + concentration triples in one aggregation
     const concLines = ingredients.map((i) => {
       const safeName = i.name.replace(/[^a-zA-Z0-9]/g, "");
       return `cosmo:${safeName} cosmo:actualConcentration "${i.concentration}"^^xsd:double .`;
     }).join("\n");
-    await n20sAddTurtle(g,
-      `@prefix cosmo: <http://example.org/cosmo#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${concLines}`
-    );
+    const concTurtle = `@prefix cosmo: <http://example.org/cosmo#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${concLines}`;
+
+    await n20sAddTurtleBulk(g, [...ingTurtles, ...ontTurtles, ...shaclTurtles, concTurtle]);
 
     // Run rules + SHACL
     const ruleRows = await n20sQueryWithRules(g, MARKET_SPARQL, MARKET_RULES, "RDFS");
@@ -372,7 +367,7 @@ export async function exportTurtle(
       fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`),
     ]);
 
-    for (const t of [...ingTurtles, ...ontTurtles]) await n20sAddTurtle(g, t);
+    await n20sAddTurtleBulk(g, [...ingTurtles, ...ontTurtles]);
     await n20sInfer(g, "RDFS");
     const turtle = await n20sToTurtle(g);
     await n20sDropSafe(g);

@@ -379,3 +379,60 @@ export async function exportTurtle(
     return turtle;
   });
 }
+
+// ── Ingredient relationship graph for NVL ──────────────────────
+
+export interface GraphNode {
+  id: string;
+  name: string;
+  category: string;
+}
+
+export interface GraphRel {
+  id: string;
+  from: string;
+  to: string;
+  type: string;
+}
+
+export async function getIngredientGraph(
+  category?: string
+): Promise<{ nodes: GraphNode[]; rels: GraphRel[] }> {
+  // If category provided, show that category + connected ingredients from other categories
+  const rows = await runQuery<{
+    aId: string; aName: string; aCategory: string;
+    bId: string; bName: string; bCategory: string;
+    relType: string; relId: string;
+  }>(
+    category
+      ? `
+        MATCH (a:Ingredient)-[:BELONGS_TO]->(:Category {name: $category})
+        MATCH (a)-[r:INCOMPATIBLE_WITH|COMPATIBLE_WITH|SUBSTITUTE_FOR]-(b:Ingredient)
+        MATCH (a)-[:BELONGS_TO]->(ca:Category)
+        MATCH (b)-[:BELONGS_TO]->(cb:Category)
+        RETURN elementId(a) AS aId, a.name AS aName, ca.name AS aCategory,
+               elementId(b) AS bId, b.name AS bName, cb.name AS bCategory,
+               type(r) AS relType, elementId(r) AS relId
+      `
+      : `
+        MATCH (a:Ingredient)-[r:INCOMPATIBLE_WITH|COMPATIBLE_WITH|SUBSTITUTE_FOR]->(b:Ingredient)
+        MATCH (a)-[:BELONGS_TO]->(ca:Category)
+        MATCH (b)-[:BELONGS_TO]->(cb:Category)
+        RETURN elementId(a) AS aId, a.name AS aName, ca.name AS aCategory,
+               elementId(b) AS bId, b.name AS bName, cb.name AS bCategory,
+               type(r) AS relType, elementId(r) AS relId
+      `,
+    category ? { category } : {}
+  );
+
+  const nodeMap = new Map<string, GraphNode>();
+  const rels: GraphRel[] = [];
+
+  for (const row of rows) {
+    if (!nodeMap.has(row.aId)) nodeMap.set(row.aId, { id: row.aId, name: row.aName, category: row.aCategory });
+    if (!nodeMap.has(row.bId)) nodeMap.set(row.bId, { id: row.bId, name: row.bName, category: row.bCategory });
+    rels.push({ id: row.relId, from: row.aId, to: row.bId, type: row.relType });
+  }
+
+  return { nodes: Array.from(nodeMap.values()), rels };
+}

@@ -1,5 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { FilledButton, LoadingSpinner, Banner } from "@neo4j-ndl/react";
+import { InteractiveNvlWrapper } from "@neo4j-nvl/react";
+import type { Node as NvlNode, Relationship as NvlRel } from "@neo4j-nvl/base";
 import UseCaseExplainer, { EXPLORE_SLIDES } from "./UseCaseExplainer";
 import {
   getIngredients,
@@ -7,6 +9,7 @@ import {
   getProductBOM,
   getProducts,
   getRDFClassification,
+  getIngredientGraph,
   type Ingredient,
   type Product,
   type CommunityMember,
@@ -31,6 +34,16 @@ export default function ExploreTab() {
   const [loadingCommunities, setLoadingCommunities] = useState(false);
   const [loadingRDF, setLoadingRDF] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Graph view state
+  const [graphNodes, setGraphNodes] = useState<NvlNode[]>([]);
+  const [graphRels, setGraphRels] = useState<NvlRel[]>([]);
+  const [graphCategory, setGraphCategory] = useState<string>("");
+  const [loadingGraph, setLoadingGraph] = useState(false);
+  const [clickedNodeId, setClickedNodeId] = useState<string | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const nvlRef = useRef<any>(null);
+  const graphNodeDataRef = useRef<Map<string, { name: string; category: string }>>(new Map());
 
   useEffect(() => {
     Promise.all([getIngredients(), getProducts()])
@@ -74,6 +87,46 @@ export default function ExploreTab() {
       setBom([]);
     }
   }, []);
+
+  const loadGraph = useCallback(async () => {
+    setLoadingGraph(true);
+    try {
+      const { nodes, rels } = await getIngredientGraph(graphCategory || undefined);
+      const catColors: Record<string, string> = {};
+      const uniqueCats = [...new Set(nodes.map((n) => n.category))];
+      uniqueCats.forEach((cat, i) => {
+        catColors[cat] = COMMUNITY_COLORS[i % COMMUNITY_COLORS.length];
+      });
+      const dataMap = new Map<string, { name: string; category: string }>();
+      nodes.forEach((n) => dataMap.set(n.id, { name: n.name, category: n.category }));
+      graphNodeDataRef.current = dataMap;
+      setClickedNodeId(null);
+      setGraphNodes(
+        nodes.map((n) => ({
+          id: n.id,
+          color: catColors[n.category] ?? "#90CAF9",
+          size: 15,
+        }))
+      );
+      setGraphRels(
+        rels.map((r) => ({
+          id: r.id,
+          from: r.from,
+          to: r.to,
+          caption: r.type.replace(/_/g, " "),
+          color:
+            r.type === "INCOMPATIBLE_WITH"
+              ? "#E53935"
+              : r.type === "COMPATIBLE_WITH"
+              ? "#43A047"
+              : "#FB8C00",
+        }))
+      );
+    } catch (e: unknown) {
+      setError((e as Error).message);
+    }
+    setLoadingGraph(false);
+  }, [graphCategory]);
 
   if (loading) {
     return (
@@ -326,6 +379,113 @@ export default function ExploreTab() {
             )}
           </div>
         </div>
+      </div>
+
+      {/* NVL Ingredient Relationship Graph */}
+      <div className="card">
+        <h3>Ingredient Relationship Graph</h3>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+          <select
+            value={graphCategory}
+            onChange={(e) => setGraphCategory(e.target.value)}
+            style={{ padding: "4px 8px", borderRadius: 4, border: "1px solid #ccc", fontSize: 13 }}
+          >
+            <option value="">All categories</option>
+            {Object.keys(byCategory).sort().map((cat) => (
+              <option key={cat} value={cat}>{cat}</option>
+            ))}
+          </select>
+          <FilledButton size="small" onClick={loadGraph} isLoading={loadingGraph} isDisabled={loadingGraph}>
+            Load Graph
+          </FilledButton>
+          <span style={{ fontSize: 12, color: "#666" }}>
+            <span style={{ color: "#E53935", fontWeight: 700 }}>■</span> Incompatible&nbsp;&nbsp;
+            <span style={{ color: "#43A047", fontWeight: 700 }}>■</span> Compatible&nbsp;&nbsp;
+            <span style={{ color: "#FB8C00", fontWeight: 700 }}>■</span> Substitute
+          </span>
+        </div>
+        {graphNodes.length > 0 ? (
+          <div style={{ display: "flex", gap: 12 }}>
+            <div style={{ flex: 1, height: 500, border: "1px solid #eee", borderRadius: 8, overflow: "hidden" }}>
+              <InteractiveNvlWrapper
+                ref={nvlRef}
+                nodes={graphNodes}
+                rels={graphRels}
+                layout="d3Force"
+                nvlOptions={{ renderer: "canvas", allowDynamicMinZoom: true }}
+                nvlCallbacks={{
+                  onLayoutDone: () =>
+                    nvlRef.current?.fit(
+                      graphNodes.map((n) => n.id),
+                      { animated: false }
+                    ),
+                }}
+                mouseEventCallbacks={{
+                  onDrag: true,
+                  onZoom: true,
+                  onPan: true,
+                  onNodeClick: (node) => setClickedNodeId(node.id),
+                  onCanvasClick: () => setClickedNodeId(null),
+                }}
+                style={{ width: "100%", height: "100%" }}
+              />
+            </div>
+            <div style={{ width: 220, height: 500, overflowY: "auto" }}>
+              {clickedNodeId ? (() => {
+                const data = graphNodeDataRef.current.get(clickedNodeId);
+                const connections = graphRels.filter(
+                  (r) => r.from === clickedNodeId || r.to === clickedNodeId
+                );
+                return (
+                  <div style={{ padding: "12px 0" }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6, wordBreak: "break-word" }}>
+                      {data?.name}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
+                      {data?.category}
+                    </div>
+                    {connections.length > 0 && (
+                      <>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: "#555", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                          Relationships
+                        </div>
+                        {connections.map((r) => {
+                          const otherId = r.from === clickedNodeId ? r.to : r.from;
+                          const other = graphNodeDataRef.current.get(otherId);
+                          const relColor =
+                            r.color === "#E53935" ? "#E53935"
+                            : r.color === "#43A047" ? "#43A047"
+                            : "#FB8C00";
+                          return (
+                            <div
+                              key={r.id}
+                              style={{ fontSize: 12, marginBottom: 6, display: "flex", alignItems: "flex-start", gap: 6 }}
+                            >
+                              <span style={{ color: relColor, fontWeight: 700, flexShrink: 0 }}>■</span>
+                              <span>
+                                <span style={{ color: relColor, fontWeight: 600 }}>{r.caption}</span>
+                                <br />
+                                <span style={{ color: "#444" }}>{other?.name}</span>
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </>
+                    )}
+                  </div>
+                );
+              })() : (
+                <div style={{ padding: "12px 0", fontSize: 13, color: "#aaa" }}>
+                  Click a node to inspect
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="empty-state">
+            <p>Select a category filter and click Load Graph to visualize ingredient relationships</p>
+          </div>
+        )}
       </div>
 
     </div>

@@ -47,6 +47,7 @@ npm run dev
 VITE_NEO4J_URI=bolt://127.0.0.1:7687
 VITE_NEO4J_USER=neo4j
 VITE_NEO4J_PASSWORD=<password>
+VITE_NEO4J_DATABASE=cosmo          # optional — defaults to the instance default database
 VITE_GEMINI_API_KEY=<key>          # optional — for the Assistant tab
 
 # To use n20s-server instead of the plugin:

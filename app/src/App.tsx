@@ -25,7 +25,7 @@ function App() {
             </span>
           </div>
           <p className="subtitle">
-            Graph-native formulation screening with Neo4j + n20s
+            Graph-native formulation screening with Neo4j + Semantics
           </p>
         </div>
       </header>

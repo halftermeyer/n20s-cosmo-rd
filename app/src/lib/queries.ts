@@ -66,6 +66,10 @@ export interface Ingredient {
   cas: string;
   cost: number;
   category: string;
+  maxConcentrationEU?: number;
+  maxConcentrationUS?: number;
+  maxConcentrationChina?: number;
+  maxConcentrationJapan?: number;
 }
 
 export interface Product {
@@ -285,7 +289,11 @@ export async function getIngredientsByCategory(category: string): Promise<Ingred
     `
     MATCH (i:Ingredient)-[:BELONGS_TO]->(c:Category {name: $category})
     RETURN i.name AS name, i.inci AS inci, i.cas AS cas,
-           i.cost AS cost, c.name AS category
+           i.cost AS cost, c.name AS category,
+           i.maxConcentrationEU AS maxConcentrationEU,
+           i.maxConcentrationUS AS maxConcentrationUS,
+           i.maxConcentrationChina AS maxConcentrationChina,
+           i.maxConcentrationJapan AS maxConcentrationJapan
     ORDER BY i.name
   `,
     { category }

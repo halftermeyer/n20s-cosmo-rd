@@ -256,7 +256,9 @@ export default function ExploreTab() {
                 </div>
               )}
 
-              {selectedIngredient.turtle.includes("maxConcentration") && (
+              {(["EU", "US", "China", "Japan"] as const).some(
+                (m) => selectedIngredient[`maxConcentration${m}` as keyof typeof selectedIngredient] != null
+              ) && (
                 <>
                   <h3 style={{ marginTop: 16 }}>Regulation Limits</h3>
                   <table className="data-table">
@@ -267,15 +269,13 @@ export default function ExploreTab() {
                       </tr>
                     </thead>
                     <tbody>
-                      {["EU", "US", "China", "Japan"].map((market) => {
-                        const match = selectedIngredient.turtle.match(
-                          new RegExp(`maxConcentration${market}\\s+"([^"]+)"`)
-                        );
-                        if (!match) return null;
+                      {(["EU", "US", "China", "Japan"] as const).map((market) => {
+                        const val = selectedIngredient[`maxConcentration${market}` as keyof typeof selectedIngredient] as number | undefined;
+                        if (val == null) return null;
                         return (
                           <tr key={market}>
                             <td>{market}</td>
-                            <td>{(parseFloat(match[1]) * 100).toFixed(2)}%</td>
+                            <td>{(val * 100).toFixed(2)}%</td>
                           </tr>
                         );
                       })}

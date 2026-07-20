@@ -2,6 +2,24 @@
 
 A demo application showcasing **Neo4j + n20s** capabilities: combining property graph traversal with in-memory RDF reasoning (RDFS inference, Jena rules, SHACL validation) for cosmetics formulation screening.
 
+## Screenshots
+
+**Explore** — ingredient portfolio by category, RDFS classification inspector, product BOM explorer, ingredient relationship graph
+
+[![Explore tab](https://github.com/halftermeyer/n20s-cosmo-rd/raw/main/docs/screenshots/1-explore.png)](https://github.com/halftermeyer/n20s-cosmo-rd/blob/main/docs/screenshots/1-explore.png)
+
+**Formulate** — formulation template builder with real-time incompatibility detection and multi-market SHACL compliance validation
+
+[![Formulate tab](https://github.com/halftermeyer/n20s-cosmo-rd/raw/main/docs/screenshots/2-formulate.png)](https://github.com/halftermeyer/n20s-cosmo-rd/blob/main/docs/screenshots/2-formulate.png)
+
+**Scenarios** — four regulatory/supply-chain scenarios mixing Cypher traversal with n20s RDFS reasoning and Jena rules
+
+[![Scenarios tab](https://github.com/halftermeyer/n20s-cosmo-rd/raw/main/docs/screenshots/3-scenarios.png)](https://github.com/halftermeyer/n20s-cosmo-rd/blob/main/docs/screenshots/3-scenarios.png)
+
+**Assistant** — conversational interface backed by the MCP server for natural-language formulation and compliance queries
+
+[![Assistant tab](https://github.com/halftermeyer/n20s-cosmo-rd/raw/main/docs/screenshots/4-assistant.png)](https://github.com/halftermeyer/n20s-cosmo-rd/blob/main/docs/screenshots/4-assistant.png)
+
 Built on [n20s](https://github.com/halftermeyer/neo4j-n20s) — a Neo4j plugin (and standalone server) for in-memory RDF reasoning from Cypher.
 
 ## What It Demonstrates

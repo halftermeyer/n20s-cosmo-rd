@@ -2,6 +2,7 @@ import { runQuery, withGroup } from "./neo4j";
 import {
   n20sAddTurtle, n20sAddTurtleBulk, n20sQuery, n20sQueryWithRules,
   n20sValidate, n20sDropSafe, uniqueGraphName,
+  n20sProjectTemplate, n20sProjectTemplateAll,
 } from "./n20s";
 import { safeName } from "./queries";
 
@@ -67,30 +68,22 @@ export async function runRegulatoryChangeImpact(
     oldLimit: number | null;
   }>(
     `
-    // Traverse: Market ← SOLD_IN ← Product → CONTAINS* → Ingredient → BELONGS_TO → Category
     MATCH (m:Market {name: $market})<-[:SOLD_IN]-(p:Product)
     MATCH path = (p)-[:CONTAINS*]->(i:Ingredient)
     WHERE (i)-[:BELONGS_TO]->(:Category {name: $category})
     WITH p, i,
          reduce(conc = 1.0, r IN relationships(path) | conc * r.ratio) AS actualConc
-    // Extract old limit from turtle if present
-    WITH p, i, actualConc,
-         CASE WHEN i.turtle CONTAINS $limitProp
-              THEN toFloat(
-                head([x IN split(i.turtle, $limitProp) WHERE x <> i.turtle
-                     | trim(split(split(x, '"')[1], '"')[0])])
-              )
-              ELSE null
-         END AS oldLimit
-    RETURN p.name AS product, p.sku AS sku, i.name AS ingredient,
-           actualConc, oldLimit
+    RETURN p.name AS product, p.sku AS sku, i.name AS ingredient, actualConc,
+           CASE $market
+             WHEN 'EU'    THEN i.maxConcentrationEU
+             WHEN 'US'    THEN i.maxConcentrationUS
+             WHEN 'China' THEN i.maxConcentrationChina
+             WHEN 'Japan' THEN i.maxConcentrationJapan
+             ELSE null
+           END AS oldLimit
     ORDER BY actualConc DESC
   `,
-    {
-      market,
-      category: ingredientClass,
-      limitProp: `maxConcentration${market}`,
-    }
+    { market, category: ingredientClass }
   );
 
   return rows.map((r) => {
@@ -130,11 +123,9 @@ export async function runRegulatoryChangeN20s(
   const g = uniqueGraphName("reg_impact");
   await n20sDropSafe(g);
 
-  const [ingTurtles, ontTurtles] = await Promise.all([
-    fetchTurtles(`MATCH (i:Ingredient) WHERE i.turtle IS NOT NULL RETURN i.turtle AS turtle`),
-    fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`),
-  ]);
-  await n20sAddTurtleBulk(g, [...ingTurtles, ...ontTurtles]);
+  const ontTurtles = await fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`);
+  await n20sProjectTemplateAll(g);
+  await n20sAddTurtleBulk(g, ontTurtles);
 
   const marketProp = `maxConcentration${market}`;
   const rows = await n20sQuery(g, `
@@ -189,7 +180,6 @@ export async function runPhotosensitiveCheck(
     productType: string;
     ingredient: string;
     concentrationPct: number;
-    turtle: string;
   }>(`
     MATCH (p:Product)
     WHERE p.type <> 'Sunscreen'
@@ -198,15 +188,15 @@ export async function runPhotosensitiveCheck(
          reduce(conc = 1.0, r IN relationships(path) | conc * r.ratio) AS finalConc
     WHERE finalConc > $threshold
     RETURN p.name AS product, p.type AS productType,
-           i.name AS ingredient, round(finalConc * 100, 4) AS concentrationPct,
-           i.turtle AS turtle
+           i.name AS ingredient, round(finalConc * 100, 4) AS concentrationPct
     ORDER BY finalConc DESC
   `, { threshold: thresholdFraction });
 
-  // Step 2: Load unique ingredient turtles + ontology into n20s
-  const uniqueTurtles = [...new Set(bomData.map((r) => r.turtle))];
+  // Step 2: Project unique ingredient turtles + ontology into n20s
+  const uniqueNames = [...new Set(bomData.map((r) => r.ingredient))];
   const ontTurtles = await fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`);
-  await n20sAddTurtleBulk(graphName, [...uniqueTurtles, ...ontTurtles]);
+  await n20sProjectTemplate(graphName, uniqueNames);
+  await n20sAddTurtleBulk(graphName, ontTurtles);
 
   // Step 3: RDFS query — which ingredients are PhotosensitiveAgent?
   const photoAgents = await n20sQuery(graphName, `
@@ -333,28 +323,24 @@ export async function validateSubstitution(
   const g = uniqueGraphName("sub_val");
   await n20sDropSafe(g);
 
-  // Get BOM with the substitution applied
-  const bom = await runQuery<{ ingredient: string; conc: number; turtle: string }>(`
+  // Get BOM with the substitution applied (no turtle needed)
+  const bom = await runQuery<{ ingredient: string; conc: number }>(`
     MATCH path = (p:Product {sku: $sku})-[:CONTAINS*]->(i:Ingredient)
-    WITH i.name AS origName, i.turtle AS origTurtle,
+    WITH i.name AS origName,
          reduce(conc = 1.0, r IN relationships(path) | conc * r.ratio) AS conc
-    OPTIONAL MATCH (sub:Ingredient {name: $substitute})
-    WITH origName, origTurtle, conc, sub,
-         CASE origName WHEN $original THEN $substitute ELSE origName END AS ingredient,
-         CASE origName WHEN $original THEN sub.turtle ELSE origTurtle END AS turtle
-    WHERE turtle IS NOT NULL
-    RETURN ingredient, conc, turtle
+    RETURN CASE origName WHEN $original THEN $substitute ELSE origName END AS ingredient,
+           conc
   `, { sku: productSku, original: originalIngredient, substitute: substituteIngredient });
 
-  // Load turtles + concentrations + ontology into n20s (single aggregation)
-  const uniqueTurtles = [...new Set(bom.map((r) => r.turtle))];
+  const ingredientNames = [...new Set(bom.map((r) => r.ingredient))];
   const concLines = bom.map((r) => {
     const sn = safeName(r.ingredient);
     return `cosmo:${sn} cosmo:actualConcentration "${r.conc}"^^xsd:double .`;
   }).join("\n");
   const concTurtle = `@prefix cosmo: <http://example.org/cosmo#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${concLines}`;
   const ontTurtles = await fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`);
-  await n20sAddTurtleBulk(g, [...uniqueTurtles, concTurtle, ...ontTurtles]);
+  await n20sProjectTemplate(g, ingredientNames);
+  await n20sAddTurtleBulk(g, [concTurtle, ...ontTurtles]);
 
   // Run multi-market rules with RDFS
   const ruleRows = await n20sQueryWithRules(g, MARKET_SPARQL, MARKET_RULES, "RDFS");
@@ -435,14 +421,11 @@ export async function runAllergenPropagation(
     ORDER BY concentrationPct DESC
   `, { name: ingredientName });
 
-  // Step 2: Load ingredient turtle + inject Allergen reclassification
+  // Step 2: Project ingredient via template + inject Allergen reclassification
   const sn = safeName(ingredientName);
-  const ingTurtles = await fetchTurtles(
-    `MATCH (i:Ingredient {name: $name}) RETURN i.turtle AS turtle`,
-    { name: ingredientName }
-  );
   const allergenTriple = `@prefix cosmo: <http://example.org/cosmo#> .\ncosmo:${sn} a cosmo:Allergen .`;
-  await n20sAddTurtleBulk(g, [...ingTurtles, allergenTriple]);
+  await n20sProjectTemplate(g, [ingredientName]);
+  await n20sAddTurtle(g, allergenTriple);
 
   // Step 3: Get classification (no RDFS needed — types are explicit)
   const classRows = await n20sQuery(g, `

@@ -218,3 +218,71 @@ export function getN20sServerUrl(): string { return serverUrl; }
 export function uniqueGraphName(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 }
+
+const INGREDIENT_ROW_CYPHER = (whereClause: string) => `
+  MATCH (t:Template {name: 'ingredient_mapping'})
+  WITH t.template AS tmpl
+  MATCH (i:Ingredient)${whereClause}
+  UNWIND i.rdfClasses AS rdfClass
+  WITH tmpl,
+       {safeName: i.safeName, name: i.name, inci: i.inci, cas: i.cas, rdfClass: rdfClass,
+        maxConcentrationEU: i.maxConcentrationEU, maxConcentrationUS: i.maxConcentrationUS,
+        maxConcentrationChina: i.maxConcentrationChina, maxConcentrationJapan: i.maxConcentrationJapan} AS row
+  WITH n20s.graph.projectTemplate($g, tmpl, row) AS result
+  RETURN result.added AS added
+`;
+
+/** Project named ingredients into a graph using the stored template */
+export async function n20sProjectTemplate(
+  graphName: string,
+  names: string[]
+): Promise<number> {
+  if (mode === "server") {
+    const [rowResults, tplResults] = await Promise.all([
+      runQuery<{ row: Record<string, unknown> }>(`
+        MATCH (i:Ingredient) WHERE i.name IN $names
+        UNWIND i.rdfClasses AS rdfClass
+        RETURN {safeName: i.safeName, name: i.name, inci: i.inci, cas: i.cas, rdfClass: rdfClass,
+                maxConcentrationEU: i.maxConcentrationEU, maxConcentrationUS: i.maxConcentrationUS,
+                maxConcentrationChina: i.maxConcentrationChina, maxConcentrationJapan: i.maxConcentrationJapan} AS row
+      `, { names }),
+      runQuery<{ template: string }>(`MATCH (t:Template {name: 'ingredient_mapping'}) RETURN t.template AS template`),
+    ]);
+    const result = await serverPost<{ graphName: string; added: number }>(
+      `/graph/${graphName}/projectTemplate`,
+      { template: tplResults[0]?.template || "", rows: rowResults.map((r) => r.row), ifExists: "replace" }
+    );
+    return result.added;
+  }
+  const rows = await runQuery<{ added: number }>(
+    INGREDIENT_ROW_CYPHER(" WHERE i.name IN $names"),
+    { g: graphName, names }
+  );
+  return rows[0]?.added || 0;
+}
+
+/** Project all ingredients into a graph using the stored template */
+export async function n20sProjectTemplateAll(graphName: string): Promise<number> {
+  if (mode === "server") {
+    const [rowResults, tplResults] = await Promise.all([
+      runQuery<{ row: Record<string, unknown> }>(`
+        MATCH (i:Ingredient)
+        UNWIND i.rdfClasses AS rdfClass
+        RETURN {safeName: i.safeName, name: i.name, inci: i.inci, cas: i.cas, rdfClass: rdfClass,
+                maxConcentrationEU: i.maxConcentrationEU, maxConcentrationUS: i.maxConcentrationUS,
+                maxConcentrationChina: i.maxConcentrationChina, maxConcentrationJapan: i.maxConcentrationJapan} AS row
+      `),
+      runQuery<{ template: string }>(`MATCH (t:Template {name: 'ingredient_mapping'}) RETURN t.template AS template`),
+    ]);
+    const result = await serverPost<{ graphName: string; added: number }>(
+      `/graph/${graphName}/projectTemplate`,
+      { template: tplResults[0]?.template || "", rows: rowResults.map((r) => r.row), ifExists: "replace" }
+    );
+    return result.added;
+  }
+  const rows = await runQuery<{ added: number }>(
+    INGREDIENT_ROW_CYPHER(""),
+    { g: graphName }
+  );
+  return rows[0]?.added || 0;
+}

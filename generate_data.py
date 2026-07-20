@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate a .cypher file with realistic cosmetics R&D data for Neo4j + n20s demo."""
 
+import json
 import random
 import textwrap
 
@@ -713,27 +714,38 @@ def escape_cypher_string(s):
     return s.replace("\\", "\\\\").replace("'", "\\'")
 
 
-def generate_turtle(ing):
-    """Generate Turtle RDF payload for an ingredient."""
-    name, inci, cas, cat, _, _, rdf_classes, reg = ing
-    safe_name = "".join(c if c.isalnum() else "" for c in name)
-    lines = []
-    lines.append('@prefix cosmo: <http://example.org/cosmo#> .')
-    lines.append('@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .')
-    lines.append('@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .')
-    class_decls = ", ".join(f"cosmo:{c}" for c in rdf_classes)
-    lines.append(f'cosmo:{safe_name} a {class_decls} ;')
-    lines.append(f'    rdfs:label "{name}" ;')
-    lines.append(f'    cosmo:inciName "{inci}" ;')
-    lines.append(f'    cosmo:casNumber "{cas}" .')
-    if reg:
-        # Remove the trailing period and add regulation triples
-        lines[-1] = lines[-1][:-1] + ";"
-        reg_items = list(reg.items())
-        for ri, (market, limit) in enumerate(reg_items):
-            end = " ." if ri == len(reg_items) - 1 else " ;"
-            lines.append(f'    cosmo:maxConcentration{market} "{limit}"^^xsd:double{end}')
-    return "\\n".join(lines)
+def generate_ingredient_template():
+    """Generate the JSON template for mapping Ingredient nodes to RDF triples."""
+    cosmo = "http://example.org/cosmo#"
+    rdf = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    rdfs = "http://www.w3.org/2000/01/rdf-schema#"
+    xsd = "http://www.w3.org/2001/XMLSchema#"
+    return json.dumps({
+        "subject": f"{cosmo}{{safeName}}",
+        "triples": [
+            {"predicate": f"{rdf}type",
+             "object": f"{cosmo}{{rdfClass}}",
+             "kind": "iri"},
+            {"predicate": f"{rdfs}label",
+             "object": "{name}"},
+            {"predicate": f"{cosmo}inciName",
+             "object": "{inci}"},
+            {"predicate": f"{cosmo}casNumber",
+             "object": "{cas}"},
+            {"predicate": f"{cosmo}maxConcentrationEU",
+             "object": "{maxConcentrationEU}",
+             "datatype": f"{xsd}double"},
+            {"predicate": f"{cosmo}maxConcentrationUS",
+             "object": "{maxConcentrationUS}",
+             "datatype": f"{xsd}double"},
+            {"predicate": f"{cosmo}maxConcentrationChina",
+             "object": "{maxConcentrationChina}",
+             "datatype": f"{xsd}double"},
+            {"predicate": f"{cosmo}maxConcentrationJapan",
+             "object": "{maxConcentrationJapan}",
+             "datatype": f"{xsd}double"},
+        ],
+    }, separators=(",", ":"))
 
 
 def emit_cypher(products):
@@ -788,13 +800,20 @@ def emit_cypher(products):
     for ing in INGREDIENTS:
         name, inci, cas, cat, cost_low, cost_high, rdf_classes, reg = ing
         cost = round(random.uniform(cost_low, cost_high), 2)
-        turtle = generate_turtle(ing)
+        safe_nm = "".join(c if c.isalnum() else "" for c in name)
+        rdf_classes_list = "[" + ", ".join(f"'{c}'" for c in rdf_classes) + "]"
+        reg_props = ""
+        if reg:
+            for market, limit in reg.items():
+                reg_props += f", maxConcentration{market}: {limit}"
         out.append(
             f"CREATE (:Ingredient {{name: '{escape_cypher_string(name)}', "
             f"inci: '{escape_cypher_string(inci)}', "
             f"cas: '{escape_cypher_string(cas)}', "
             f"cost: {cost}, "
-            f"turtle: '{turtle}'}});"
+            f"safeName: '{safe_nm}', "
+            f"rdfClasses: {rdf_classes_list}"
+            f"{reg_props}}});"
         )
     out.append("")
 
@@ -945,6 +964,16 @@ def emit_cypher(products):
     )
     out.append(
         f"CREATE (:SHACLRules {{name: 'cosmo_validation', turtle: '{shacl_turtle}'}});"
+    )
+    out.append("")
+
+    # -- Template node --
+    out.append("// ============================================================")
+    out.append("// Step 13: Create ingredient mapping Template node")
+    out.append("// ============================================================")
+    template_json = escape_cypher_string(generate_ingredient_template())
+    out.append(
+        f"CREATE (:Template {{name: 'ingredient_mapping', template: '{template_json}'}});"
     )
     out.append("")
 

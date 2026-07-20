@@ -1,7 +1,8 @@
 import { runQuery, withGroup } from "./neo4j";
 import {
-  n20sAddTurtle, n20sAddTurtleBulk, n20sQuery, n20sQueryWithRules,
+  n20sAddTurtleBulk, n20sQuery, n20sQueryWithRules,
   n20sInfer, n20sValidate, n20sToTurtle, n20sDropSafe, uniqueGraphName,
+  n20sProjectTemplate,
 } from "./n20s";
 
 /** URI minting — single source of truth. Must match generate_data.py and mcp_server.py. */
@@ -65,7 +66,6 @@ export interface Ingredient {
   cas: string;
   cost: number;
   category: string;
-  turtle: string;
 }
 
 export interface Product {
@@ -117,7 +117,7 @@ export async function getIngredients(): Promise<Ingredient[]> {
   return runQuery<Ingredient>(`
     MATCH (i:Ingredient)-[:BELONGS_TO]->(c:Category)
     RETURN i.name AS name, i.inci AS inci, i.cas AS cas,
-           i.cost AS cost, c.name AS category, i.turtle AS turtle
+           i.cost AS cost, c.name AS category
     ORDER BY c.name, i.name
   `);
 }
@@ -257,12 +257,9 @@ export async function getRDFClassification(ingredientName: string): Promise<stri
     const sn = safeName(ingredientName);
     await n20sDropSafe(g);
 
-    // Fetch turtles from Neo4j, then load into n20s
-    const [ingTurtles, ontTurtles] = await Promise.all([
-      fetchTurtles(`MATCH (i:Ingredient {name: $name}) RETURN i.turtle AS turtle`, { name: ingredientName }),
-      fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`),
-    ]);
-    await n20sAddTurtleBulk(g, [...ingTurtles, ...ontTurtles]);
+    const ontTurtles = await fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`);
+    await n20sProjectTemplate(g, [ingredientName]);
+    await n20sAddTurtleBulk(g, ontTurtles);
 
     // RDFS query
     const rows = await n20sQuery(g, `
@@ -288,7 +285,7 @@ export async function getIngredientsByCategory(category: string): Promise<Ingred
     `
     MATCH (i:Ingredient)-[:BELONGS_TO]->(c:Category {name: $category})
     RETURN i.name AS name, i.inci AS inci, i.cas AS cas,
-           i.cost AS cost, c.name AS category, i.turtle AS turtle
+           i.cost AS cost, c.name AS category
     ORDER BY i.name
   `,
     { category }
@@ -319,22 +316,20 @@ export async function validateCandidate(
     const g = uniqueGraphName("validation");
     await n20sDropSafe(g);
 
-    // Fetch turtles from Neo4j
     const names = ingredients.map((i) => i.name);
-    const [ingTurtles, ontTurtles, shaclTurtles] = await Promise.all([
-      fetchTurtles(`MATCH (i:Ingredient) WHERE i.name IN $names RETURN i.turtle AS turtle`, { names }),
+    const [ontTurtles, shaclTurtles] = await Promise.all([
       fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`),
       fetchTurtles(`MATCH (s:SHACLRules {name: 'cosmo_validation'}) RETURN s.turtle AS turtle`),
     ]);
 
-    // Load all turtles + concentration triples in one aggregation
     const concLines = ingredients.map((i) => {
       const sn = safeName(i.name);
       return `cosmo:${sn} cosmo:actualConcentration "${i.concentration}"^^xsd:double .`;
     }).join("\n");
     const concTurtle = `@prefix cosmo: <http://example.org/cosmo#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${concLines}`;
 
-    await n20sAddTurtleBulk(g, [...ingTurtles, ...ontTurtles, ...shaclTurtles, concTurtle]);
+    await n20sProjectTemplate(g, names);
+    await n20sAddTurtleBulk(g, [...ontTurtles, ...shaclTurtles, concTurtle]);
 
     // Run rules + SHACL
     const ruleRows = await n20sQueryWithRules(g, MARKET_SPARQL, MARKET_RULES, "RDFS");
@@ -367,12 +362,9 @@ export async function exportTurtle(
     await n20sDropSafe(g);
 
     const names = ingredients.map((i) => i.name);
-    const [ingTurtles, ontTurtles] = await Promise.all([
-      fetchTurtles(`MATCH (i:Ingredient) WHERE i.name IN $names RETURN i.turtle AS turtle`, { names }),
-      fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`),
-    ]);
-
-    await n20sAddTurtleBulk(g, [...ingTurtles, ...ontTurtles]);
+    const ontTurtles = await fetchTurtles(`MATCH (o:Ontology {name: 'cosmo'}) RETURN o.turtle AS turtle`);
+    await n20sProjectTemplate(g, names);
+    await n20sAddTurtleBulk(g, ontTurtles);
     await n20sInfer(g, "RDFS");
     const turtle = await n20sToTurtle(g);
     await n20sDropSafe(g);

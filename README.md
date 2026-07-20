@@ -99,7 +99,7 @@ app/                      — React app (Vite + TypeScript + @neo4j-ndl/react)
 ## Data Model
 
 ```
-(:Ingredient {name, inci, cas, cost, turtle})
+(:Ingredient {name, inci, cas, cost, safeName, rdfClasses[], maxConcentration{Market}?})
     -[:BELONGS_TO]->(:Category)
     -[:INCOMPATIBLE_WITH]->(:Ingredient)
     -[:COMPATIBLE_WITH]->(:Ingredient)
@@ -113,9 +113,10 @@ app/                      — React app (Vite + TypeScript + @neo4j-ndl/react)
 
 (:Ontology {name, turtle})
 (:SHACLRules {name, turtle})
+(:Template {name: 'ingredient_mapping', template})
 ```
 
-Each ingredient's `turtle` property carries RDF classification and regulation limits as typed `xsd:double` values.
+Ingredient RDF triples are generated at query time via `n20s.graph.projectTemplate()` using the stored JSON template — no pre-serialized Turtle per ingredient.
 
 ## Security Warning
 
